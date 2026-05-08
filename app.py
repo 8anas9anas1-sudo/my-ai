@@ -1,5 +1,6 @@
 import os
 import base64
+import json
 from flask import Flask, request, render_template_string, jsonify, session
 import requests
 from datetime import datetime
@@ -150,7 +151,8 @@ textarea:focus{outline:none;border-color:#00ff99}
   border:none;border-radius:15px;padding:0 25px;height:55px;
   font-size:18px;font-weight:700;cursor:pointer;color:#000;
 }
-.send-btn:hover{transform:scale(1.05)}
+.send-btn:disabled{opacity:0.5;cursor:not-allowed}
+.send-btn:hover:not(:disabled){transform:scale(1.05)}
 .welcome{text-align:center;padding:40px 20px;opacity:0.9}
 .welcome h2{font-size:24px;margin-bottom:15px}
 .welcome p{line-height:1.8;margin-bottom:10px}
@@ -232,7 +234,7 @@ textarea:focus{outline:none;border-color:#00ff99}
       <i class="fa-solid fa-paperclip"></i>
     </button>
     <textarea id="messageInput" placeholder="اكتب رسالتك هنا..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage(event)}"></textarea>
-    <button type="submit" class="send-btn"><i class="fa-solid fa-paper-plane"></i></button>
+    <button type="submit" class="send-btn" id="sendBtn"><i class="fa-solid fa-paper-plane"></i></button>
   </form>
 </div>
 
@@ -252,6 +254,7 @@ let currentChatId = localStorage.getItem('currentChatId') || Date.now().toString
 let chats = JSON.parse(localStorage.getItem('chats') || '{}');
 let currentFile = null;
 let currentMode = localStorage.getItem('mode') || 'fast';
+let isSending = false;
 
 if(!chats[currentChatId]) chats[currentChatId] = [];
 
@@ -313,9 +316,9 @@ function renderChat() {
   }
   container.innerHTML = '';
   chat.forEach((msg, idx) => {
-    let userContent = msg.user;
+    let userContent = escapeHtml(msg.user);
     if(msg.fileName) {
-      userContent = `<div class="file-badge"><i class="fa-solid fa-file"></i> ${msg.fileName}</div>${msg.user}`;
+      userContent = `<div class="file-badge"><i class="fa-solid fa-file"></i> ${escapeHtml(msg.fileName)}</div>${userContent}`;
     }
     let aiContent = msg.ai;
     if(msg.imageUrl) {
@@ -328,7 +331,7 @@ function renderChat() {
       <div class="message">
         <div class="ai-msg">${aiContent}</div>
         <div class="msg-actions">
-          <button class="msg-btn" onclick="copyText(\`${msg.ai.replace(/`/g,'\\`')}\`)"><i class="fa-solid fa-copy"></i> نسخ</button>
+          <button class="msg-btn" onclick="copyText(${JSON.stringify(msg.ai)})"><i class="fa-solid fa-copy"></i> نسخ</button>
           <button class="msg-btn" onclick="regenerate(${idx})"><i class="fa-solid fa-rotate"></i> إعادة</button>
         </div>
       </div>
@@ -337,12 +340,22 @@ function renderChat() {
   window.scrollTo(0, document.body.scrollHeight);
 }
 
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
 async function sendMessage(e) {
   e.preventDefault();
+  if(isSending) return;
+
   const input = document.getElementById('messageInput');
   const text = input.value.trim();
   if(!text &&!currentFile) return;
 
+  isSending = true;
+  document.getElementById('sendBtn').disabled = true;
   document.getElementById('welcome').style.display = 'none';
   input.value = '';
 
@@ -370,9 +383,14 @@ async function sendMessage(e) {
   document.getElementById('filePreview').innerHTML = '';
   saveChats();
   renderChat();
+  isSending = false;
+  document.getElementById('sendBtn').disabled = false;
 }
 
 async function regenerate(idx) {
+  if(isSending) return;
+  isSending = true;
+
   const chat = chats[currentChatId];
   const userMsg = chat[idx].user;
   chat[idx].ai = '<span class="loading"></span> جاري إعادة التوليد...';
@@ -388,11 +406,13 @@ async function regenerate(idx) {
     const data = await res.json();
     chat[idx].ai = data.response;
     if(data.imageUrl) chat[idx].imageUrl = data.imageUrl;
+    else delete chat[idx].imageUrl;
   } catch(err) {
     chat[idx].ai = 'صار خطأ: ' + err.message;
   }
   saveChats();
   renderChat();
+  isSending = false;
 }
 
 function handleFile(input) {
@@ -402,7 +422,7 @@ function handleFile(input) {
     const icon = currentFile.type.includes('pdf')? 'fa-file-pdf' : 'fa-image';
     preview.innerHTML = `
       <div class="file-preview">
-        <span><i class="fa-solid ${icon}"></i> ${currentFile.name}</span>
+        <span><i class="fa-solid ${icon}"></i> ${escapeHtml(currentFile.name)}</span>
         <button class="icon-btn" style="width:30px;height:30px" onclick="removeFile()">
           <i class="fa-solid fa-xmark"></i>
         </button>
@@ -474,8 +494,7 @@ def extract_pdf_text(pdf_file):
         return f"خطأ في قراءة PDF: {str(e)}"
 
 def get_system_prompt(mode, user_message):
-    # رد التعريف الخاص
-    identity_questions = ['من انت', 'من أنت', 'عرف بنفسك', 'من تكون', 'شن اسمك', 'who are you']
+    identity_questions = ['من انت', 'من أنت', 'عرف بنفسك', 'من تكون', 'شن اسمك', 'who are you', 'اسمك']
     if any(q in user_message.lower() for q in identity_questions):
         return "أنت مساعد ذكي. إذا سألك أحد 'من أنت' رد عليه بالضبط: أنا Wadi تم تطويري من قِبل المهندس Anas Wadi من ليبيا 🇱🇾. ولا تضيف شيء آخر."
 
@@ -503,7 +522,8 @@ def chat():
 
     messages = [{"role": "system", "content": get_system_prompt(mode, user_message)}]
     try:
-        for msg in eval(history):
+        history_data = json.loads(history)
+        for msg in history_data:
             messages.append({"role": "user", "content": msg["user"]})
             messages.append({"role": "assistant", "content": msg["ai"]})
     except:
@@ -512,7 +532,6 @@ def chat():
     model = "llama-3.3-70b-versatile" if mode == 'thinker' else "openai/gpt-oss-120b"
     image_url = None
 
-    # توليد صور
     if user_message.startswith('ارسم صورة:') or (mode == 'creative' and 'ارسم' in user_message):
         prompt = user_message.replace('ارسم صورة:', '').strip()
         encoded_prompt = requests.utils.quote(prompt)
@@ -520,7 +539,6 @@ def chat():
         ai_response = f"تم توليد الصورة بنجاح 🎨\nالوصف: {prompt}"
         return jsonify({"response": ai_response, "imageUrl": image_url})
 
-    # لو فيه ملف
     if file:
         if file.filename.lower().endswith('.pdf'):
             pdf_text = extract_pdf_text(file)
