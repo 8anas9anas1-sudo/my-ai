@@ -4,7 +4,7 @@ import json
 import re
 import time
 import hashlib
-from flask import Flask, request, render_template_string, jsonify, session
+from flask import Flask, request, render_template_string, jsonify, session, Response, stream_with_context
 import requests
 from datetime import datetime
 import PyPDF2
@@ -832,29 +832,121 @@ async function sendMessage() {
   fd.append('message', t);
   fd.append('mode', currentMode);
   fd.append('history', JSON.stringify(c.slice(0, -1)));
-  if (currentFile) fd.append('file', currentFile);
 
-  try {
-    const r = await fetch('/api/chat', { method: 'POST', body: fd });
-    if (!r.ok) throw new Error('خطأ في الخادم');
-    const d = await r.json();
-    if (d.error) { showToast(d.error, 'error'); c.pop(); }
-    else {
-      c[c.length - 1].ai = d.response;
-      c[c.length - 1].rawAi = d.rawResponse || d.response;
-      if (d.imageUrl) c[c.length - 1].imageUrl = d.imageUrl;
+  // لو فيه ملف → استخدم الـ endpoint العادي (streaming ما يدعم multipart مع الصور)
+  if (currentFile) {
+    fd.append('file', currentFile);
+    try {
+      const r = await fetch('/api/chat', { method: 'POST', body: fd });
+      if (!r.ok) throw new Error('خطأ في الخادم');
+      const d = await r.json();
+      if (d.error) { showToast(d.error, 'error'); c.pop(); }
+      else {
+        c[c.length - 1].ai = d.response;
+        c[c.length - 1].rawAi = d.rawResponse || d.response;
+        if (d.imageUrl) c[c.length - 1].imageUrl = d.imageUrl;
+      }
+    } catch (err) {
+      c[c.length - 1].ai = '⚠️ صار خطأ: ' + err.message;
+      showToast('تعذر الإرسال', 'error');
+    } finally {
+      currentFile = null;
+      document.getElementById('filePreview').classList.add('hidden');
+      document.getElementById('fileInput').value = '';
+      saveChats(); renderChat();
+      isSending = false;
+      document.getElementById('sendBtn').disabled = false;
     }
+    return;
+  }
+
+  // بدون ملف → Streaming ✨
+  let rawText = '';
+  try {
+    const r = await fetch('/api/chat/stream', { method: 'POST', body: fd });
+    if (!r.ok) throw new Error('خطأ في الخادم');
+
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    c[c.length - 1].ai = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop(); // الجزء غير المكتمل
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6);
+        if (data === '[DONE]') break;
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.error) { showToast(parsed.error, 'error'); break; }
+          if (parsed.token) {
+            rawText += parsed.token;
+            c[c.length - 1].rawAi = rawText;
+            // عرض مباشر بدون format (أسرع)
+            c[c.length - 1].ai = rawText;
+            // تحديث آخر رسالة مباشرة في الـ DOM بدون re-render كامل
+            const msgs = document.querySelectorAll('.ai-msg');
+            if (msgs.length > 0) {
+              msgs[msgs.length - 1].textContent = rawText;
+              window.scrollTo(0, document.body.scrollHeight);
+            }
+          }
+        } catch(e) { continue; }
+      }
+    }
+
+    // بعد اكتمال الـ stream → format الرد النهائي
+    if (rawText) {
+      c[c.length - 1].ai = format_response_js(rawText);
+      c[c.length - 1].rawAi = rawText;
+    } else if (c[c.length-1].ai === '') {
+      c.pop();
+    }
+
   } catch (err) {
     c[c.length - 1].ai = '⚠️ صار خطأ: ' + err.message;
     showToast('تعذر الإرسال', 'error');
   } finally {
-    currentFile = null;
-    document.getElementById('filePreview').classList.add('hidden');
-    document.getElementById('fileInput').value = '';
     saveChats(); renderChat();
     isSending = false;
     document.getElementById('sendBtn').disabled = false;
   }
+}
+
+// Markdown → HTML (نسخة JS مطابقة لـ Python format_response)
+function format_response_js(text) {
+  // عناوين
+  text = text.replace(/^### (.+)$/gm, '<h4>$1</h4>');
+  text = text.replace(/^## (.+)$/gm, '<h3>$1</h3>');
+  text = text.replace(/^# (.+)$/gm, '<h2>$1</h2>');
+  // Bold & Italic
+  text = text.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+  text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  text = text.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  // Code blocks
+  text = text.replace(/```(\w+)?\n([\s\S]*?)```/g, (_, lang, code) =>
+    `<pre><code class="lang-${lang||''}">${code.trim()}</code></pre>`);
+  text = text.replace(/`(.+?)`/g, '<code>$1</code>');
+  // قوائم
+  text = text.replace(/(^[-*•] .+$\n?)+/gm, match => {
+    const items = [...match.matchAll(/^[-*•] (.+)$/gm)].map(m => `<li>${m[1]}</li>`);
+    return `<ul>${items.join('')}</ul>`;
+  });
+  text = text.replace(/(^\d+\. .+$\n?)+/gm, match => {
+    const items = [...match.matchAll(/^\d+\. (.+)$/gm)].map(m => `<li>${m[1]}</li>`);
+    return `<ol>${items.join('')}</ol>`;
+  });
+  // فقرات
+  text = text.replace(/\n{2,}/g, '</p><p>');
+  text = `<p>${text}</p>`;
+  text = text.replace(/<p><\/p>/g, '').replace(/<p><h/g, '<h');
+  return text;
 }
 
 async function regenerate(i) {
@@ -868,12 +960,43 @@ async function regenerate(i) {
   fd.append('message', u);
   fd.append('mode', currentMode);
   fd.append('history', JSON.stringify(c.slice(0, i)));
+
+  let rawText = '';
   try {
-    const r = await fetch('/api/chat', { method: 'POST', body: fd });
-    const d = await r.json();
-    c[i].ai = d.response;
-    c[i].rawAi = d.rawResponse || d.response;
-    if (d.imageUrl) c[i].imageUrl = d.imageUrl; else delete c[i].imageUrl;
+    const r = await fetch('/api/chat/stream', { method: 'POST', body: fd });
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    c[i].ai = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6);
+        if (data === '[DONE]') break;
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.token) {
+            rawText += parsed.token;
+            c[i].ai = rawText;
+            const msgs = document.querySelectorAll('.ai-msg');
+            // الرسالة i تكون في موضع i*2+1 في الـ DOM
+            const targetMsg = msgs[i];
+            if (targetMsg) { targetMsg.textContent = rawText; window.scrollTo(0, document.body.scrollHeight); }
+          }
+        } catch(e) { continue; }
+      }
+    }
+    if (rawText) {
+      c[i].ai = format_response_js(rawText);
+      c[i].rawAi = rawText;
+      delete c[i].imageUrl;
+    }
   } catch (err) {
     c[i].ai = '⚠️ صار خطأ: ' + err.message;
   } finally {
@@ -1043,6 +1166,89 @@ def generate_image(prompt):
 @app.route("/")
 def home():
     return render_template_string(HTML)
+
+@app.route("/api/chat/stream", methods=["POST"])
+def chat_stream():
+    """Streaming endpoint - يرسل الرد كلمة بكلمة"""
+    if not API_KEY:
+        return jsonify({"error": "مفتاح API غير مضاف"})
+
+    ip = get_client_ip()
+    if is_rate_limited(ip):
+        return jsonify({"error": "⏱️ أرسلت طلبات كثيرة. انتظر دقيقة."})
+
+    user_message = sanitize_input(request.form.get("message", ""))
+    mode = request.form.get("mode", "fast")
+    history_raw = request.form.get("history", "[]")
+
+    if is_prompt_injection(user_message):
+        return jsonify({"error": "⚠️ تم رفض الرسالة لأسباب أمنية."})
+
+    if mode not in MODE_PROMPTS:
+        mode = 'fast'
+
+    messages = [{"role": "system", "content": get_system_prompt(mode, user_message)}]
+
+    try:
+        history_data = json.loads(history_raw)
+        for msg in history_data[-10:]:
+            u = str(msg.get("user", ""))[:1000]
+            a = str(msg.get("rawAi") or msg.get("ai", ""))[:2000]
+            if u and a and a != '__typing__':
+                messages.append({"role": "user", "content": u})
+                messages.append({"role": "assistant", "content": a})
+    except Exception:
+        pass
+
+    messages.append({"role": "user", "content": user_message or "مرحبا"})
+
+    model_map = {
+        'thinker': 'llama-3.3-70b-versatile',
+        'coder':   'llama-3.3-70b-versatile',
+        'writer':  'llama-3.3-70b-versatile',
+        'fast':    'llama-3.1-8b-instant',
+        'funny':   'llama-3.1-8b-instant',
+        'creative':'llama-3.3-70b-versatile',
+    }
+    model = model_map.get(mode, 'llama-3.1-8b-instant')
+
+    def generate():
+        try:
+            resp = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "max_tokens": 2048,
+                    "temperature": 0.8 if mode in ('funny', 'creative', 'writer') else 0.4,
+                    "top_p": 0.9,
+                    "stream": True
+                },
+                stream=True,
+                timeout=60
+            )
+            for line in resp.iter_lines():
+                if line:
+                    line_text = line.decode('utf-8')
+                    if line_text.startswith('data: '):
+                        data_str = line_text[6:]
+                        if data_str == '[DONE]':
+                            yield "data: [DONE]\n\n"
+                            break
+                        try:
+                            data = json.loads(data_str)
+                            delta = data['choices'][0]['delta'].get('content', '')
+                            if delta:
+                                yield f"data: {json.dumps({'token': delta})}\n\n"
+                        except Exception:
+                            continue
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
