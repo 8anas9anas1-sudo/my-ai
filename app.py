@@ -71,7 +71,7 @@ def extract_pdf(f):
 # ─── HTML ─────────────────────────────────────────────────────────────────────
 HTML = r"""
 <!DOCTYPE html>
-<html dir="rtl" lang="ar">
+<html lang="ar">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
@@ -260,13 +260,15 @@ header {
 
 .bubble {
   /* nearly full width on phone */
-  max-width: calc(100% - 46px);
+  max-width: calc(100vw - 70px);
+  min-width: 60px;
   padding: 11px 14px;
   border-radius: var(--radius);
   font-size: 16px;
   line-height: 1.78;
   white-space: pre-wrap;
   word-break: break-word;
+  overflow-wrap: anywhere;
 }
 .bubble.user-bubble {
   background: var(--user-bg);
@@ -518,6 +520,17 @@ textarea#inp::placeholder { color: var(--text2); }
 }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
+/* ── RTL text only ── */
+.bubble, textarea, .tpl-btn, .mode-btn, .chat-item,
+.welcome h2, .welcome p, .logo, .thinking-block,
+.file-badge, .file-preview-bar, h3 {
+  direction: rtl;
+  text-align: right;
+}
+/* keep layout elements LTR */
+header, .modes, .composer, .input-area, .templates,
+.msg-row, .msg-actions, .sidebar { direction: ltr; }
+
 /* ── Animations ── */
 @keyframes fadeUp {
   from { opacity: 0; transform: translateY(10px); }
@@ -554,7 +567,7 @@ textarea#inp::placeholder { color: var(--text2); }
 
 <div class="app">
 
-  <!-- Header — زر القائمة يمين، الشعار وسط، سلة يسار -->
+  <!-- Header -->
   <header style="direction:ltr;">
     <button class="icon-btn" onclick="openSidebar()"><i class="fa-solid fa-bars"></i></button>
     <span class="logo">✦ Wadi AI</span>
@@ -594,15 +607,15 @@ textarea#inp::placeholder { color: var(--text2); }
       <button class="tpl-btn" onclick="useTpl('اشرحلي ')">💡 اشرح</button>
     </div>
 
-    <div class="composer" style="direction:ltr;">
-      <button class="send-btn" id="sendBtn" onclick="send()">
-        <i class="fa-solid fa-paper-plane"></i>
-      </button>
-      <textarea id="inp" placeholder="اكتب رسالتك…" style="direction:rtl; text-align:right;"
-        onkeydown="onKey(event)" oninput="resize(this)"></textarea>
+    <div class="composer" style="direction:ltr; display:flex; gap:8px; align-items:flex-end;">
       <input type="file" id="fileInput" accept="image/*,.pdf" onchange="handleFile(this)">
       <button class="icon-btn" onclick="document.getElementById('fileInput').click()" title="رفع ملف">
         <i class="fa-solid fa-paperclip"></i>
+      </button>
+      <textarea id="inp" placeholder="اكتب رسالتك…" style="direction:rtl;"
+        onkeydown="onKey(event)" oninput="resize(this)"></textarea>
+      <button class="send-btn" id="sendBtn" onclick="send()">
+        <i class="fa-solid fa-paper-plane"></i>
       </button>
     </div>
   </div>
