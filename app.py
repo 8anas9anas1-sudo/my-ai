@@ -554,13 +554,11 @@ textarea#inp::placeholder { color: var(--text2); }
 
 <div class="app">
 
-  <!-- Header -->
-  <header>
+  <!-- Header — زر القائمة يمين، الشعار وسط، سلة يسار -->
+  <header style="direction:ltr;">
     <button class="icon-btn" onclick="openSidebar()"><i class="fa-solid fa-bars"></i></button>
     <span class="logo">✦ Wadi AI</span>
-    <div class="header-right">
-      <button class="icon-btn" onclick="clearChat()" title="مسح المحادثة"><i class="fa-solid fa-trash-can"></i></button>
-    </div>
+    <button class="icon-btn" onclick="clearChat()" title="مسح المحادثة"><i class="fa-solid fa-trash-can"></i></button>
   </header>
 
   <!-- Modes -->
@@ -596,15 +594,15 @@ textarea#inp::placeholder { color: var(--text2); }
       <button class="tpl-btn" onclick="useTpl('اشرحلي ')">💡 اشرح</button>
     </div>
 
-    <div class="composer">
+    <div class="composer" style="direction:ltr;">
+      <button class="send-btn" id="sendBtn" onclick="send()">
+        <i class="fa-solid fa-paper-plane"></i>
+      </button>
+      <textarea id="inp" placeholder="اكتب رسالتك…" style="direction:rtl; text-align:right;"
+        onkeydown="onKey(event)" oninput="resize(this)"></textarea>
       <input type="file" id="fileInput" accept="image/*,.pdf" onchange="handleFile(this)">
       <button class="icon-btn" onclick="document.getElementById('fileInput').click()" title="رفع ملف">
         <i class="fa-solid fa-paperclip"></i>
-      </button>
-      <textarea id="inp" placeholder="اكتب رسالتك…"
-        onkeydown="onKey(event)" oninput="resize(this)"></textarea>
-      <button class="send-btn" id="sendBtn" onclick="send()">
-        <i class="fa-solid fa-paper-plane"></i>
       </button>
     </div>
   </div>
