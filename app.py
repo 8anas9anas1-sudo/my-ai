@@ -4,14 +4,29 @@ import json
 import re
 import time
 import hashlib
-from flask import Flask, request, render_template_string, jsonify, session
+from flask import Flask, request, render_template_string, jsonify, session, redirect, url_for
 import requests
 from datetime import datetime
 import PyPDF2
 import io
+import bleach
+from authlib.integrations.flask_client import OAuth
+from flask_session import Session
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "anas-wadi-secret-2026-ultra")
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "anas-wadi-secret-2026-ultra")
+app.config['SESSION_TYPE'] = 'filesystem'
+Session(app)
+
+# ─── إعداد تسجيل قوقل ──────────────────────────────────────
+oauth = OAuth(app)
+google = oauth.register(
+    name='google',
+    client_id=os.environ.get("GOOGLE_CLIENT_ID"),
+    client_secret=os.environ.get("GOOGLE_CLIENT_SECRET"),
+    server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
+    client_kwargs={'scope': 'openid email profile'}
+)
 
 API_KEY = os.environ.get("GROQ_API_KEY")
 
@@ -61,6 +76,31 @@ def sanitize_input(text):
     text = re.sub(r'\[INST\].*?\[/INST\]', '', text, flags=re.DOTALL)
     return text[:MAX_MSG_LENGTH].strip()
 
+# ─── إجبار تسجيل الدخول قبل أي شيء ───────────────────────────
+@app.before_request
+def require_google_login():
+    allowed_routes = ['login', 'auth_callback', 'static']
+    if 'user' not in session and request.endpoint not in allowed_routes:
+        return redirect(url_for('login'))
+
+# ─── تسجيل الدخول والخروج ────────────────────────────────────
+@app.route('/login')
+def login():
+    redirect_uri = url_for('auth_callback', _external=True)
+    return google.authorize_redirect(redirect_uri)
+
+@app.route('/auth/callback')
+def auth_callback():
+    token = google.authorize_access_token()
+    user_info = token.get('userinfo')
+    session['user'] = user_info
+    return redirect('/')
+
+@app.route('/logout')
+def logout():
+    session.pop('user', None)
+    return redirect('/')
+
 # ─── تنسيق الإجابة (Markdown → HTML) ────────────────────────
 def format_response(text):
     # العناوين
@@ -88,7 +128,8 @@ def format_response(text):
     text = f'<p>{text}</p>'
     # تنظيف
     text = text.replace('<p></p>', '').replace('<p><h', '<h').replace('</h2></p>', '</h2>')
-    return text
+    allowed_tags = ['h2','h3','h4','p','strong','em','ul','ol','li','code','pre','br']
+    return bleach.clean(text, tags=allowed_tags, strip=True)
 
 # ─── واجهة HTML المحسّنة ─────────────────────────────────────
 HTML = """
@@ -204,6 +245,10 @@ body::before {
 
 .header-actions { display: flex; gap: 8px; align-items: center; }
 
+.user-info { display: flex; align-items: center; gap: 10px; margin-left: 10px; }
+.user-info img { width: 32px; height: 32px; border-radius: 50%; border: 2px solid var(--accent1); }
+.user-info span { font-size: 13px; font-weight: 600; }
+
 .icon-btn {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -213,6 +258,7 @@ body::before {
   font-size: 15px; transition: all 0.25s;
   display: flex; align-items: center; justify-content: center;
   position: relative; overflow: hidden;
+  text-decoration: none;
 }
 .icon-btn::before {
   content: ''; position: absolute; inset: 0;
@@ -563,9 +609,16 @@ textarea::placeholder { color: var(--text-dim); }
   </button>
   <span class="logo">✨ Anas Wadi</span>
   <div class="header-actions">
+    <div class="user-info">
+      <img src="{{ user_picture }}" alt="user">
+      <span>{{ user_name }}</span>
+    </div>
     <button class="icon-btn" onclick="toggleTheme()" title="تغيير الوضع" id="themeBtn">
       <i class="fa-solid fa-moon"></i>
     </button>
+    <a href="/logout" class="icon-btn" title="خروج">
+      <i class="fa-solid fa-right-from-bracket"></i>
+    </a>
     <button class="icon-btn" onclick="showSupport()" title="ادعمني">
       <i class="fa-solid fa-heart" style="color:#ff6b6b"></i>
     </button>
@@ -781,14 +834,14 @@ function renderChat() {
     const isTyping = m.ai === '__typing__';
     let userContent = escHtml(m.user);
     if (m.fileName) userContent = `<div class="file-badge"><i class="fa-solid fa-file"></i> ${escHtml(m.fileName)}</div><br>${userContent}`;
-    
+
     let aiContent = isTyping
       ? `<div class="typing-indicator"><span></span><span></span><span></span></div>`
       : m.ai;
-    
+
     let imgHtml = '';
     if (m.imageUrl) imgHtml = `<br><img class="generated-img" src="${escHtml(m.imageUrl)}" alt="صورة مولدة" loading="lazy">`;
-    
+
     c.innerHTML += `
       <div class="message">
         <div class="user-msg">${userContent}</div>
@@ -905,7 +958,6 @@ function useTemplate(t) {
 }
 
 function copyText(t) {
-  // نسخ النص الخام بدون HTML
   const tmp = document.createElement('div');
   tmp.innerHTML = t;
   navigator.clipboard.writeText(tmp.textContent || t);
@@ -1013,26 +1065,15 @@ def get_system_prompt(mode, user_message):
         return "أجب بالضبط: أنا Wadi، مساعد ذكاء اصطناعي طوّره المهندس Anas Wadi من ليبيا 🇱🇾. لا تضف أي معلومة أخرى."
     return MODE_PROMPTS.get(mode, MODE_PROMPTS['fast'])
 
-# ─── Image Generation (متعدد المحركات) ───────────────────────
+# ─── Image Generation ─────────────────────────────────────────
 def generate_image(prompt):
-    """توليد صورة بجودة عالية مع fallback"""
     clean_prompt = prompt.strip()
-    
-    # ترجمة سريعة للعربي
-    translate_keywords = {
-        'شجرة': 'tree', 'بحر': 'ocean', 'جبل': 'mountain', 'قمر': 'moon',
-        'شمس': 'sun', 'مدينة': 'city', 'صحراء': 'desert', 'قطة': 'cat',
-        'كلب': 'dog', 'فرس': 'horse', 'امرأة': 'woman', 'رجل': 'man'
-    }
-    
-    # المحرك الأساسي - Pollinations مع معاملات محسّنة
     encoded = requests.utils.quote(clean_prompt)
     primary_url = (
         f"https://image.pollinations.ai/prompt/{encoded}"
         f"?width=1024&height=1024&model=flux&enhance=true&nologo=true"
         f"&seed={hash(clean_prompt) % 99999}"
     )
-    # احتياطي بحجم مختلف
     fallback_url = (
         f"https://image.pollinations.ai/prompt/{encoded}"
         f"?width=1024&height=768&nologo=true"
@@ -1042,7 +1083,10 @@ def generate_image(prompt):
 # ─── Routes ──────────────────────────────────────────────────
 @app.route("/")
 def home():
-    return render_template_string(HTML)
+    user = session.get('user', {})
+    user_name = user.get('name', 'مستخدم')
+    user_picture = user.get('picture', 'https://ui-avatars.com/api/?name=User&background=00d2ff&color=000')
+    return render_template_string(HTML, user_name=user_name, user_picture=user_picture)
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
