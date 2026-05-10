@@ -5,4 +5,4 @@ gunicorn==21.2.0
 PyPDF2==3.0.1
 requests
 bleach
-psycopg2-binary==2.9.9
+psycopg[binary]==3.1.18
