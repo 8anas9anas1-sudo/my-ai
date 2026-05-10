@@ -12,8 +12,8 @@ import io
 import bleach
 from authlib.integrations.flask_client import OAuth
 from flask_session import Session
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import psycopg
+from psycopg.rows import dict_row
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "anas-wadi-secret-2026-ultra")
@@ -38,7 +38,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 def get_db():
     """يفتح اتصال بقاعدة البيانات"""
     try:
-        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
         return conn
     except Exception as e:
         print(f"❌ خطأ في الاتصال بقاعدة البيانات: {e}")
@@ -111,7 +111,7 @@ def get_user_history(user_email, limit=50):
                 LIMIT %s
             """, (user_email, limit))
             rows = cur.fetchall()
-        return [dict(r) for r in rows]
+        return rows
     except Exception as e:
         print(f"❌ خطأ في جلب السجل: {e}")
         return []
@@ -132,7 +132,7 @@ def get_chat_messages(chat_id, user_email):
                 ORDER BY created_at ASC
             """, (chat_id, user_email))
             rows = cur.fetchall()
-        return [dict(r) for r in rows]
+        return rows
     except Exception as e:
         print(f"❌ خطأ في جلب المحادثة: {e}")
         return []
@@ -157,8 +157,8 @@ def get_user_chats(user_email):
             """, (user_email,))
             rows = cur.fetchall()
         # رتّب حسب أحدث محادثة
-        chats = [dict(r) for r in rows]
-        chats.sort(key=lambda x: x['created_at'], reverse=True)
+        rows.sort(key=lambda x: x['created_at'], reverse=True)
+        chats = rows
         return chats
     except Exception as e:
         print(f"❌ خطأ في جلب قائمة المحادثات: {e}")
