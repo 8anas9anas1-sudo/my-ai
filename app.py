@@ -27,7 +27,11 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 
 def get_db():
     try:
-        conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
+        # Supabase يحتاج SSL — وتحويل postgres:// إلى postgresql://
+        db_url = DATABASE_URL or ""
+        if db_url.startswith("postgres://"):
+            db_url = db_url.replace("postgres://", "postgresql://", 1)
+        conn = psycopg.connect(db_url, row_factory=dict_row, sslmode='require')
         return conn
     except Exception as e:
         print(f"❌ خطأ في الاتصال بقاعدة البيانات: {e}")
