@@ -12,6 +12,8 @@ import io
 import bleach
 from authlib.integrations.flask_client import OAuth
 from flask_session import Session
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "anas-wadi-secret-2026-ultra")
@@ -29,6 +31,144 @@ google = oauth.register(
 )
 
 API_KEY = os.environ.get("GROQ_API_KEY")
+
+# ─── إعداد قاعدة البيانات ────────────────────────────────────
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+def get_db():
+    """يفتح اتصال بقاعدة البيانات"""
+    try:
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        return conn
+    except Exception as e:
+        print(f"❌ خطأ في الاتصال بقاعدة البيانات: {e}")
+        return None
+
+def init_db():
+    """ينشئ الجداول إذا ما كانت موجودة"""
+    conn = get_db()
+    if not conn:
+        print("⚠️ تعذر إنشاء الجداول - قاعدة البيانات غير متاحة")
+        return
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS conversations (
+                    id SERIAL PRIMARY KEY,
+                    chat_id TEXT NOT NULL,
+                    user_email TEXT NOT NULL,
+                    user_name TEXT,
+                    user_message TEXT,
+                    ai_response TEXT,
+                    raw_ai TEXT,
+                    mode TEXT DEFAULT 'fast',
+                    image_url TEXT,
+                    file_name TEXT,
+                    created_at TIMESTAMP DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_chat_id ON conversations(chat_id);
+                CREATE INDEX IF NOT EXISTS idx_user_email ON conversations(user_email);
+            """)
+            conn.commit()
+        print("✅ قاعدة البيانات جاهزة")
+    except Exception as e:
+        print(f"❌ خطأ في إنشاء الجداول: {e}")
+    finally:
+        conn.close()
+
+def save_message(chat_id, user_email, user_name, user_message, ai_response, raw_ai, mode, image_url=None, file_name=None):
+    """يحفظ رسالة في قاعدة البيانات"""
+    conn = get_db()
+    if not conn:
+        return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO conversations
+                    (chat_id, user_email, user_name, user_message, ai_response, raw_ai, mode, image_url, file_name)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (chat_id, user_email, user_name, user_message, ai_response, raw_ai, mode, image_url, file_name))
+            conn.commit()
+        return True
+    except Exception as e:
+        print(f"❌ خطأ في حفظ الرسالة: {e}")
+        return False
+    finally:
+        conn.close()
+
+def get_user_history(user_email, limit=50):
+    """يجلب سجل محادثات المستخدم"""
+    conn = get_db()
+    if not conn:
+        return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT chat_id, user_message, ai_response, raw_ai, mode, image_url, file_name, created_at
+                FROM conversations
+                WHERE user_email = %s
+                ORDER BY created_at DESC
+                LIMIT %s
+            """, (user_email, limit))
+            rows = cur.fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        print(f"❌ خطأ في جلب السجل: {e}")
+        return []
+    finally:
+        conn.close()
+
+def get_chat_messages(chat_id, user_email):
+    """يجلب رسائل محادثة معينة"""
+    conn = get_db()
+    if not conn:
+        return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT user_message, ai_response, raw_ai, image_url, file_name, created_at
+                FROM conversations
+                WHERE chat_id = %s AND user_email = %s
+                ORDER BY created_at ASC
+            """, (chat_id, user_email))
+            rows = cur.fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        print(f"❌ خطأ في جلب المحادثة: {e}")
+        return []
+    finally:
+        conn.close()
+
+def get_user_chats(user_email):
+    """يجلب قائمة محادثات المستخدم (مجمّعة حسب chat_id)"""
+    conn = get_db()
+    if not conn:
+        return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT ON (chat_id)
+                    chat_id,
+                    user_message,
+                    created_at
+                FROM conversations
+                WHERE user_email = %s
+                ORDER BY chat_id, created_at ASC
+            """, (user_email,))
+            rows = cur.fetchall()
+        # رتّب حسب أحدث محادثة
+        chats = [dict(r) for r in rows]
+        chats.sort(key=lambda x: x['created_at'], reverse=True)
+        return chats
+    except Exception as e:
+        print(f"❌ خطأ في جلب قائمة المحادثات: {e}")
+        return []
+    finally:
+        conn.close()
+
+# ─── تشغيل إنشاء الجداول عند بدء التطبيق ────────────────────
+with app.app_context():
+    init_db()
 
 # ─── نظام الحماية ────────────────────────────────────────────
 RATE_LIMIT = {}  # ip -> [timestamps]
@@ -56,7 +196,6 @@ def is_rate_limited(ip):
         return True
     if ip not in RATE_LIMIT:
         RATE_LIMIT[ip] = []
-    # نظف الطلبات القديمة (أكثر من دقيقة)
     RATE_LIMIT[ip] = [t for t in RATE_LIMIT[ip] if now - t < 60]
     if len(RATE_LIMIT[ip]) >= MAX_REQUESTS_PER_MINUTE:
         return True
@@ -71,7 +210,6 @@ def is_prompt_injection(text):
     return False
 
 def sanitize_input(text):
-    # حذف تعليمات النظام المخفية
     text = re.sub(r'<\|.*?\|>', '', text)
     text = re.sub(r'\[INST\].*?\[/INST\]', '', text, flags=re.DOTALL)
     return text[:MAX_MSG_LENGTH].strip()
@@ -103,18 +241,14 @@ def logout():
 
 # ─── تنسيق الإجابة (Markdown → HTML) ────────────────────────
 def format_response(text):
-    # العناوين
     text = re.sub(r'^### (.+)$', r'<h4>\1</h4>', text, flags=re.MULTILINE)
     text = re.sub(r'^## (.+)$', r'<h3>\1</h3>', text, flags=re.MULTILINE)
     text = re.sub(r'^# (.+)$', r'<h2>\1</h2>', text, flags=re.MULTILINE)
-    # Bold & Italic
     text = re.sub(r'\*\*\*(.+?)\*\*\*', r'<strong><em>\1</em></strong>', text)
     text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
     text = re.sub(r'\*(.+?)\*', r'<em>\1</em>', text)
-    # Code blocks
     text = re.sub(r'```(\w+)?\n(.*?)```', lambda m: f'<pre><code class="lang-{m.group(1) or ""}">{m.group(2).strip()}</code></pre>', text, flags=re.DOTALL)
     text = re.sub(r'`(.+?)`', r'<code>\1</code>', text)
-    # قوائم
     def convert_list(m):
         items = re.findall(r'^[-*•] (.+)$', m.group(0), re.MULTILINE)
         return '<ul>' + ''.join(f'<li>{i}</li>' for i in items) + '</ul>'
@@ -123,10 +257,8 @@ def format_response(text):
         items = re.findall(r'^\d+\. (.+)$', m.group(0), re.MULTILINE)
         return '<ol>' + ''.join(f'<li>{i}</li>' for i in items) + '</ol>'
     text = re.sub(r'(^\d+\. .+$\n?)+', convert_ol, text, flags=re.MULTILINE)
-    # فقرات
     text = re.sub(r'\n{2,}', '</p><p>', text)
     text = f'<p>{text}</p>'
-    # تنظيف
     text = text.replace('<p></p>', '').replace('<p><h', '<h').replace('</h2></p>', '</h2>')
     allowed_tags = ['h2','h3','h4','p','strong','em','ul','ol','li','code','pre','br']
     return bleach.clean(text, tags=allowed_tags, strip=True)
@@ -570,6 +702,14 @@ textarea::placeholder { color: var(--text-dim); }
 .toast.error { border-color: rgba(255,80,80,0.5); color: #ff8080; }
 .toast.success { border-color: rgba(0,255,148,0.5); color: var(--accent2); }
 
+/* ─── DB Badge ─── */
+.db-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; color: var(--accent2); opacity: 0.7;
+  padding: 2px 8px; border-radius: 6px;
+  border: 1px solid rgba(0,255,148,0.2);
+}
+
 /* ─── Scrollbar ─── */
 ::-webkit-scrollbar { width: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -599,7 +739,9 @@ textarea::placeholder { color: var(--text-dim); }
   <button class="new-chat-btn" onclick="newChat()">
     <i class="fa-solid fa-plus"></i> محادثة جديدة
   </button>
-  <div id="chatList"></div>
+  <div id="chatList">
+    <div style="color:var(--text-dim);font-size:13px;text-align:center;padding:10px">⏳ جاري التحميل...</div>
+  </div>
 </div>
 
 <!-- Header -->
@@ -721,26 +863,23 @@ textarea::placeholder { color: var(--text-dim); }
 
 <script>
 // ─── State ──────────────────────────────────────────────────
-let currentChatId = localStorage.getItem('currentChatId');
-let chats = {};
+let currentChatId = localStorage.getItem('currentChatId') || Date.now().toString();
+let chats = {};          // chat_id -> [messages]  (cache محلي)
+let dbChats = [];        // قائمة المحادثات من DB
 let currentFile = null;
 let currentMode = localStorage.getItem('mode') || 'fast';
 let isSending = false;
 
 // ─── Init ────────────────────────────────────────────────────
-function init() {
+async function init() {
   generateStars();
+  // تحميل cache المحلي
   try { chats = JSON.parse(localStorage.getItem('chats') || '{}'); } catch(e) { chats = {}; }
-  if (!currentChatId || !chats[currentChatId]) {
-    currentChatId = Date.now().toString();
-    chats[currentChatId] = [];
-    localStorage.setItem('currentChatId', currentChatId);
-    saveChats();
-  }
-  loadChats();
-  renderChat();
   setMode(currentMode, false);
   loadTheme();
+  renderChat();
+  // تحميل قائمة المحادثات من DB
+  await loadDbChats();
 }
 
 // ─── Stars ───────────────────────────────────────────────────
@@ -777,8 +916,37 @@ function setMode(m, save = true) {
   document.querySelectorAll('.mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
 }
 
-// ─── Chats ───────────────────────────────────────────────────
-function loadChats() {
+// ─── DB: تحميل قائمة المحادثات ────────────────────────────────
+async function loadDbChats() {
+  try {
+    const r = await fetch('/api/chats');
+    if (!r.ok) throw new Error('خطأ');
+    const data = await r.json();
+    dbChats = data.chats || [];
+    renderChatList();
+  } catch(e) {
+    // fallback: استخدم localStorage
+    renderChatListLocal();
+  }
+}
+
+function renderChatList() {
+  const l = document.getElementById('chatList');
+  l.innerHTML = '';
+  if (dbChats.length === 0) {
+    l.innerHTML = '<div style="color:var(--text-dim);font-size:13px;text-align:center;padding:10px">لا توجد محادثات سابقة</div>';
+    return;
+  }
+  dbChats.forEach(chat => {
+    const d = document.createElement('div');
+    d.className = 'chat-item' + (chat.chat_id === currentChatId ? ' active' : '');
+    d.textContent = (chat.user_message || 'محادثة').substring(0, 28);
+    d.onclick = () => switchChat(chat.chat_id);
+    l.appendChild(d);
+  });
+}
+
+function renderChatListLocal() {
   const l = document.getElementById('chatList');
   l.innerHTML = '';
   Object.keys(chats).reverse().forEach(id => {
@@ -792,12 +960,49 @@ function loadChats() {
   });
 }
 
-function switchChat(id) {
+// ─── DB: تحميل رسائل محادثة ────────────────────────────────
+async function loadChatFromDb(chatId) {
+  try {
+    const r = await fetch(`/api/chat/${chatId}`);
+    if (!r.ok) throw new Error('خطأ');
+    const data = await r.json();
+    const messages = data.messages || [];
+    // حوّل للصيغة المحلية
+    chats[chatId] = messages.map(m => ({
+      user: m.user_message,
+      ai: m.ai_response,
+      rawAi: m.raw_ai,
+      imageUrl: m.image_url,
+      fileName: m.file_name
+    }));
+    saveChats();
+    return true;
+  } catch(e) {
+    return false;
+  }
+}
+
+async function switchChat(id) {
   currentChatId = id;
   localStorage.setItem('currentChatId', id);
+  // إذا ما عندنا الرسائل محلياً، جيبها من DB
+  if (!chats[id] || chats[id].length === 0) {
+    renderLoading();
+    await loadChatFromDb(id);
+  }
   renderChat();
-  loadChats();
+  renderChatList();
   closeSidebar();
+}
+
+function renderLoading() {
+  document.getElementById('chatContainer').innerHTML = `
+    <div style="text-align:center;padding:60px;color:var(--text-dim)">
+      <div class="typing-indicator" style="justify-content:center">
+        <span></span><span></span><span></span>
+      </div>
+      <p style="margin-top:16px">جاري تحميل المحادثة...</p>
+    </div>`;
 }
 
 function newChat() {
@@ -806,7 +1011,7 @@ function newChat() {
   localStorage.setItem('currentChatId', currentChatId);
   saveChats();
   renderChat();
-  loadChats();
+  renderChatList();
   closeSidebar();
 }
 
@@ -876,6 +1081,7 @@ async function sendMessage() {
   inp.value = '';
   inp.style.height = '52px';
 
+  if (!chats[currentChatId]) chats[currentChatId] = [];
   const c = chats[currentChatId];
   const fName = currentFile ? currentFile.name : null;
   c.push({ user: t || 'حلل الملف', ai: '__typing__', fileName: fName });
@@ -884,6 +1090,7 @@ async function sendMessage() {
   const fd = new FormData();
   fd.append('message', t);
   fd.append('mode', currentMode);
+  fd.append('chat_id', currentChatId);
   fd.append('history', JSON.stringify(c.slice(0, -1)));
   if (currentFile) fd.append('file', currentFile);
 
@@ -896,6 +1103,8 @@ async function sendMessage() {
       c[c.length - 1].ai = d.response;
       c[c.length - 1].rawAi = d.rawResponse || d.response;
       if (d.imageUrl) c[c.length - 1].imageUrl = d.imageUrl;
+      // تحديث قائمة المحادثات في Sidebar
+      await loadDbChats();
     }
   } catch (err) {
     c[c.length - 1].ai = '⚠️ صار خطأ: ' + err.message;
@@ -920,6 +1129,7 @@ async function regenerate(i) {
   const fd = new FormData();
   fd.append('message', u);
   fd.append('mode', currentMode);
+  fd.append('chat_id', currentChatId);
   fd.append('history', JSON.stringify(c.slice(0, i)));
   try {
     const r = await fetch('/api/chat', { method: 'POST', body: fd });
@@ -1088,21 +1298,65 @@ def home():
     user_picture = user.get('picture', 'https://ui-avatars.com/api/?name=User&background=00d2ff&color=000')
     return render_template_string(HTML, user_name=user_name, user_picture=user_picture)
 
+@app.route("/api/chats")
+def api_get_chats():
+    """يرجع قائمة محادثات المستخدم الحالي"""
+    user = session.get('user', {})
+    email = user.get('email', '')
+    if not email:
+        return jsonify({"chats": []})
+    chats_list = get_user_chats(email)
+    # حوّل datetime لنص
+    for c in chats_list:
+        if c.get('created_at'):
+            c['created_at'] = str(c['created_at'])
+    return jsonify({"chats": chats_list})
+
+@app.route("/api/chat/<chat_id>")
+def api_get_chat(chat_id):
+    """يرجع رسائل محادثة معينة"""
+    user = session.get('user', {})
+    email = user.get('email', '')
+    if not email:
+        return jsonify({"messages": []})
+    messages = get_chat_messages(chat_id, email)
+    for m in messages:
+        if m.get('created_at'):
+            m['created_at'] = str(m['created_at'])
+    return jsonify({"messages": messages})
+
+@app.route("/api/history")
+def api_history():
+    """يرجع آخر 50 رسالة للمستخدم"""
+    user = session.get('user', {})
+    email = user.get('email', '')
+    if not email:
+        return jsonify({"history": []})
+    history = get_user_history(email)
+    for h in history:
+        if h.get('created_at'):
+            h['created_at'] = str(h['created_at'])
+    return jsonify({"history": history})
+
 @app.route("/api/chat", methods=["POST"])
 def chat():
     if not API_KEY:
         return jsonify({"response": "⚠️ مفتاح API غير مضاف. أضف GROQ_API_KEY في إعدادات Render.", "rawResponse": ""})
 
     ip = get_client_ip()
-
-    # Rate limiting
     if is_rate_limited(ip):
         return jsonify({"error": "⏱️ أرسلت طلبات كثيرة. انتظر دقيقة ثم حاول مجدداً."})
 
     user_message = sanitize_input(request.form.get("message", ""))
     mode = request.form.get("mode", "fast")
+    chat_id = request.form.get("chat_id", "")
     history_raw = request.form.get("history", "[]")
     file = request.files.get("file")
+
+    # بيانات المستخدم
+    user_info = session.get('user', {})
+    user_email = user_info.get('email', 'anonymous')
+    user_name = user_info.get('name', 'مستخدم')
 
     # حماية Prompt Injection
     if is_prompt_injection(user_message):
@@ -1117,7 +1371,7 @@ def chat():
 
     try:
         history_data = json.loads(history_raw)
-        for msg in history_data[-10:]:  # آخر 10 رسائل فقط
+        for msg in history_data[-10:]:
             u = str(msg.get("user", ""))[:1000]
             a = str(msg.get("rawAi") or msg.get("ai", ""))[:2000]
             if u and a and a != '__typing__':
@@ -1139,14 +1393,21 @@ def chat():
         if not prompt:
             prompt = user_message
         primary_url, fallback_url = generate_image(prompt)
+        response_text = f"🎨 تم توليد الصورة!\n**الوصف:** {prompt}\n\n_انقر على الصورة لعرضها بحجمها الكامل_"
+        raw_text = f"تم توليد صورة: {prompt}"
+        # حفظ في DB
+        if chat_id:
+            save_message(chat_id, user_email, user_name, user_message, response_text, raw_text, mode, image_url=primary_url)
         return jsonify({
-            "response": f"🎨 تم توليد الصورة!\n**الوصف:** {prompt}\n\n_انقر على الصورة لعرضها بحجمها الكامل_",
-            "rawResponse": f"تم توليد صورة: {prompt}",
+            "response": response_text,
+            "rawResponse": raw_text,
             "imageUrl": primary_url
         })
 
     # معالجة الملف
+    file_name = None
     if file:
+        file_name = file.filename
         fname = file.filename.lower()
 
         if fname.endswith('.pdf'):
@@ -1155,7 +1416,7 @@ def chat():
 
         elif file.content_type and file.content_type.startswith('image/'):
             img_bytes = file.read()
-            if len(img_bytes) > 10 * 1024 * 1024:  # 10MB limit
+            if len(img_bytes) > 10 * 1024 * 1024:
                 return jsonify({"error": "⚠️ حجم الصورة كبير جداً (الحد الأقصى 10MB)"})
             img_b64 = base64.b64encode(img_bytes).decode()
             messages.append({
@@ -1174,7 +1435,11 @@ def chat():
                 )
                 result = resp.json()
                 raw = result["choices"][0]["message"]["content"] if resp.ok else "خطأ في تحليل الصورة"
-                return jsonify({"response": format_response(raw), "rawResponse": raw})
+                formatted = format_response(raw)
+                # حفظ في DB
+                if chat_id:
+                    save_message(chat_id, user_email, user_name, user_message or 'تحليل صورة', formatted, raw, mode, file_name=file_name)
+                return jsonify({"response": formatted, "rawResponse": raw})
             except Exception as e:
                 return jsonify({"response": f"⚠️ خطأ: {str(e)}", "rawResponse": ""})
 
@@ -1217,6 +1482,20 @@ def chat():
         return jsonify({"response": f"⚠️ خطأ في الاتصال: {str(e)}", "rawResponse": ""})
 
     formatted = format_response(raw)
+
+    # ─── حفظ الرسالة في Supabase ───────────────────────────────
+    if chat_id:
+        save_message(
+            chat_id=chat_id,
+            user_email=user_email,
+            user_name=user_name,
+            user_message=request.form.get("message", ""),  # الرسالة الأصلية بدون تعديل PDF
+            ai_response=formatted,
+            raw_ai=raw,
+            mode=mode,
+            file_name=file_name
+        )
+
     return jsonify({"response": formatted, "rawResponse": raw})
 
 
