@@ -440,8 +440,7 @@ const s = document.getElementById('stars');
 for(let i=0;i<55;i++){
   const el = document.createElement('div');
   el.className='star';
-  const sz = Math.random()*2.5+0.5;
-  el.style.cssText=`width:${sz}px;height:${sz}px;left:${Math.random()*100}%;top:${Math.random()*100}%;--d:${(Math.random()*4+2).toFixed(1)}s;--op:${(Math.random()*0.4+0.2).toFixed(2)};animation-delay:${(Math.random()*5).toFixed(1)}s`;
+  el.style.cssText=`left:${Math.random()*100}%;top:${Math.random()*100}%;width:${Math.random()*3+0.5}px;height:${el.style.width};--d:${Math.random()*4+2}s;--op:${Math.random()*0.7+0.3}`;
   s.appendChild(el);
 }
 </script>
@@ -449,64 +448,50 @@ for(let i=0;i<55;i++){
 </html>
 """
 
-# ─── صفحة الواجهة الرئيسية ───────────────────────────────────
+# ─── HTML Template ─────────────────────────────────────────────
 HTML = """
 <!DOCTYPE html>
-<html dir="rtl" data-theme="dark">
+<html dir="rtl" lang="ar">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#050510">
-<title>✨ Anas Wadi ✨</title>
+<title>🌊 Anas Wadi — مساعدك الذكي</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700;900&family=Cairo:wght@300;400;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700;900&family=Cairo:wght@400;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.8.0/styles/atom-one-dark.min.css">
+<script src="https://cdn.jsdelivr.net/npm/highlight.js@11.8.0/highlight.min.js"></script>
 <style>
-/* ═══════════════════════════════════════════
-   CSS VARIABLES — Dark / Light Theme
-═══════════════════════════════════════════ */
 :root {
-  --bg: #050510;
-  --surface: rgba(255,255,255,0.04);
-  --surface2: rgba(255,255,255,0.08);
-  --surface3: rgba(255,255,255,0.12);
-  --border: rgba(255,255,255,0.08);
-  --border-glow: rgba(0,210,255,0.35);
-  --text: #e8eaf6;
-  --text-dim: rgba(232,234,246,0.55);
-  --text-muted: rgba(232,234,246,0.35);
-  --accent1: #00d2ff;
-  --accent2: #00ff94;
+  --accent1: #00ff94;
+  --accent2: #00d2ff;
   --accent3: #7c4dff;
-  --accent4: #ff6b6b;
-  --user-grad: linear-gradient(135deg, #00ff94, #00d2ff);
+  --bg: #050510;
+  --surface: rgba(20,20,40,0.6);
+  --surface2: rgba(30,30,60,0.8);
+  --text: #e8eaf6;
+  --text-dim: rgba(232,234,246,0.6);
+  --text-muted: rgba(232,234,246,0.38);
+  --border: rgba(255,255,255,0.08);
+  --border-glow: rgba(0,210,255,0.3);
   --glow: 0 0 30px rgba(0,210,255,0.15);
-  --glow-strong: 0 0 40px rgba(0,210,255,0.3);
-  --sidebar-bg: rgba(4,4,14,0.98);
-  --header-bg: rgba(5,5,16,0.88);
 }
 [data-theme="light"] {
+  --accent1: #00aa66;
+  --accent2: #0077cc;
+  --accent3: #5533cc;
   --bg: #f0f4ff;
   --surface: rgba(0,0,0,0.04);
   --surface2: rgba(0,0,0,0.07);
-  --surface3: rgba(0,0,0,0.11);
-  --border: rgba(0,0,0,0.1);
-  --border-glow: rgba(0,100,200,0.3);
   --text: #0d1117;
   --text-dim: rgba(13,17,23,0.6);
   --text-muted: rgba(13,17,23,0.38);
-  --accent1: #0077cc;
-  --accent2: #00aa66;
-  --accent3: #5533cc;
+  --border: rgba(0,0,0,0.1);
+  --border-glow: rgba(0,100,200,0.3);
   --glow: 0 0 30px rgba(0,100,200,0.1);
-  --glow-strong: 0 0 40px rgba(0,100,200,0.2);
-  --sidebar-bg: rgba(235,240,255,0.98);
-  --header-bg: rgba(240,244,255,0.88);
 }
 
-/* ═══════════════════════════════════════════
-   RESET & BASE
-═══════════════════════════════════════════ */
 * { margin:0; padding:0; box-sizing:border-box; }
 html { scroll-behavior:smooth; }
 body {
@@ -525,9 +510,6 @@ body::before {
 }
 @keyframes bgPulse { from{opacity:0.7} to{opacity:1} }
 
-/* ═══════════════════════════════════════════
-   STARS
-═══════════════════════════════════════════ */
 .stars { position:fixed; inset:0; pointer-events:none; z-index:0; overflow:hidden; }
 .star {
   position:absolute; border-radius:50%; background:white;
@@ -538,36 +520,23 @@ body::before {
   50%{opacity:var(--op,0.6);transform:scale(1)}
 }
 
-/* ═══════════════════════════════════════════
-   HEADER — Clean, Professional, Mobile-First
-═══════════════════════════════════════════ */
 .header {
   position:sticky; top:0; z-index:100;
-  background:var(--header-bg);
-  backdrop-filter:blur(24px) saturate(1.6);
-  -webkit-backdrop-filter:blur(24px);
+  background:rgba(5,5,16,0.88); backdrop-filter:blur(24px) saturate(1.6);
   border-bottom:1px solid var(--border);
-  padding:0 16px;
-  height:58px;
+  padding:0 16px; height:58px;
   display:flex; align-items:center; gap:10px;
-  transition:background 0.3s;
 }
 
-/* Left slot: menu button */
 .header-left { display:flex; align-items:center; gap:8px; flex-shrink:0; }
-
-/* Center slot: logo takes full remaining space */
 .header-center { flex:1; display:flex; justify-content:center; align-items:center; }
-
-/* Right slot: actions */
 .header-right { display:flex; align-items:center; gap:6px; flex-shrink:0; }
 
 .logo {
-  font-size:20px; font-weight:900; letter-spacing:-0.3px; white-space:nowrap;
+  font-size:20px; font-weight:900; white-space:nowrap;
   background:linear-gradient(90deg,var(--accent2),var(--accent1),var(--accent3));
   -webkit-background-clip:text; -webkit-text-fill-color:transparent;
   background-clip:text; animation:logoShimmer 4s linear infinite; background-size:200%;
-  text-shadow:none;
 }
 @keyframes logoShimmer{0%{background-position:0% 50%}100%{background-position:200% 50%}}
 
@@ -576,40 +545,26 @@ body::before {
   color:var(--text); width:38px; height:38px;
   border-radius:10px; cursor:pointer; font-size:15px;
   transition:all 0.22s; display:flex; align-items:center; justify-content:center;
-  position:relative; overflow:hidden; text-decoration:none; flex-shrink:0;
-}
-.icon-btn::before {
-  content:''; position:absolute; inset:0;
-  background:linear-gradient(135deg,var(--accent1),var(--accent2));
-  opacity:0; transition:opacity 0.22s;
+  position:relative; text-decoration:none;
 }
 .icon-btn:hover { border-color:var(--border-glow); transform:translateY(-1px); box-shadow:var(--glow); }
-.icon-btn:hover::before { opacity:0.12; }
-.icon-btn:active { transform:scale(0.94); }
-.icon-btn i { position:relative; z-index:1; }
 
-/* ═══════════════════════════════════════════
-   SIDEBAR — Professional with User Profile & Delete
-═══════════════════════════════════════════ */
 .sidebar {
   position:fixed; right:-300px; top:0;
   width:280px; height:100vh;
-  background:var(--sidebar-bg); backdrop-filter:blur(30px);
+  background:rgba(4,4,14,0.98); backdrop-filter:blur(30px);
   border-left:1px solid var(--border);
   transition:right 0.36s cubic-bezier(0.4,0,0.2,1);
   z-index:200; display:flex; flex-direction:column;
 }
-[data-theme="light"] .sidebar { box-shadow:-4px 0 30px rgba(0,0,0,0.08); }
 .sidebar.open { right:0; }
 
 .sidebar-overlay {
   display:none; position:fixed; inset:0; z-index:199;
   background:rgba(0,0,0,0.5); backdrop-filter:blur(4px);
-  transition:opacity 0.3s;
 }
 .sidebar-overlay.open { display:block; }
 
-/* Sidebar user profile card */
 .sidebar-profile {
   display:flex; align-items:center; gap:12px;
   padding:20px 16px 14px;
@@ -621,18 +576,9 @@ body::before {
   background:linear-gradient(135deg,var(--accent2),var(--accent1));
   display:flex; align-items:center; justify-content:center;
   font-size:18px; font-weight:900; color:#000;
-  box-shadow:0 4px 14px rgba(0,210,255,0.3);
 }
-.sidebar-profile-info { flex:1; min-width:0; }
-.sidebar-profile-name { font-size:14px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.sidebar-profile-badge {
-  display:inline-flex; align-items:center; gap:4px;
-  font-size:10px; color:var(--accent2); margin-top:2px;
-  background:rgba(0,255,148,0.1); padding:2px 8px; border-radius:20px;
-  border:1px solid rgba(0,255,148,0.2);
-}
+.sidebar-profile-name { font-size:14px; font-weight:700; }
 
-/* Sidebar top actions */
 .sidebar-actions { padding:12px 14px; }
 .new-chat-btn {
   background:linear-gradient(135deg,var(--accent2),var(--accent1));
@@ -642,34 +588,18 @@ body::before {
   display:flex; align-items:center; gap:8px; justify-content:center;
   box-shadow:0 4px 18px rgba(0,210,255,0.25);
 }
-.new-chat-btn:hover { transform:translateY(-1px); box-shadow:0 6px 24px rgba(0,210,255,0.4); }
-.new-chat-btn:active { transform:scale(0.98); }
+.new-chat-btn:hover { transform:translateY(-1px); }
 
-/* Sidebar chat list */
-.sidebar-label {
-  padding:4px 16px 8px;
-  font-size:11px; font-weight:700; color:var(--text-muted);
-  text-transform:uppercase; letter-spacing:1px;
-}
 .chat-list-scroll { flex:1; overflow-y:auto; padding:0 10px 10px; }
-.chat-list-scroll::-webkit-scrollbar { width:3px; }
-.chat-list-scroll::-webkit-scrollbar-thumb { background:var(--border); border-radius:10px; }
-
 .chat-item {
   display:flex; align-items:center; gap:8px;
   padding:9px 12px; border-radius:10px; cursor:pointer;
   transition:all 0.2s; margin-bottom:3px;
   border:1px solid transparent;
-  position:relative;
 }
 .chat-item:hover { background:var(--surface2); border-color:var(--border); }
 .chat-item.active { background:rgba(0,210,255,0.08); border-color:rgba(0,210,255,0.25); }
-.chat-item-icon { font-size:14px; flex-shrink:0; opacity:0.7; }
-.chat-item-text {
-  flex:1; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
-  color:var(--text-dim);
-}
-.chat-item.active .chat-item-text { color:var(--text); }
+.chat-item-text { flex:1; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .chat-item-delete {
   opacity:0; flex-shrink:0; width:24px; height:24px;
   border-radius:6px; border:none; background:rgba(255,80,80,0.12);
@@ -678,9 +608,7 @@ body::before {
   transition:all 0.18s;
 }
 .chat-item:hover .chat-item-delete { opacity:1; }
-.chat-item-delete:hover { background:rgba(255,80,80,0.25); transform:scale(1.1); }
 
-/* Sidebar footer */
 .sidebar-footer {
   padding:12px 14px; border-top:1px solid var(--border);
   display:flex; gap:8px;
@@ -689,464 +617,313 @@ body::before {
   flex:1; background:var(--surface); border:1px solid var(--border);
   color:var(--text-dim); padding:9px 12px; border-radius:10px;
   font-family:'Tajawal',sans-serif; font-size:12px; font-weight:600;
-  cursor:pointer; transition:all 0.2s; display:flex; align-items:center; gap:6px; justify-content:center;
+  cursor:pointer; transition:all 0.2s;
 }
-.sidebar-footer-btn:hover { border-color:var(--border-glow); color:var(--text); }
 
-/* ═══════════════════════════════════════════
-   MODE BUTTONS
-═══════════════════════════════════════════ */
 .modes {
   display:flex; gap:7px; padding:10px 16px;
-  overflow-x:auto; position:relative; z-index:1; scrollbar-width:none;
+  overflow-x:auto; background:var(--surface);
   border-bottom:1px solid var(--border);
 }
-.modes::-webkit-scrollbar { display:none; }
 .mode-btn {
-  background:var(--surface); border:1px solid var(--border);
-  color:var(--text-dim); padding:7px 15px; border-radius:20px;
-  font-size:12px; font-weight:600; white-space:nowrap; cursor:pointer;
-  transition:all 0.22s; font-family:'Tajawal',sans-serif;
+  background:rgba(255,255,255,0.08); border:1px solid var(--border);
+  color:var(--text-dim); padding:7px 12px; border-radius:8px;
+  font-size:13px; font-weight:600; cursor:pointer;
+  transition:all 0.2s; flex-shrink:0;
 }
-.mode-btn:hover { border-color:var(--border-glow); color:var(--text); }
 .mode-btn.active {
   background:linear-gradient(135deg,var(--accent2),var(--accent1));
-  color:#000; border-color:transparent;
-  box-shadow:0 3px 14px rgba(0,210,255,0.3);
-  font-weight:800;
+  color:#000; border:none;
 }
 
-/* ═══════════════════════════════════════════
-   CHAT CONTAINER
-═══════════════════════════════════════════ */
 .chat-container {
-  flex:1; padding:20px 16px 10px;
-  max-width:800px; width:100%; margin:0 auto; position:relative; z-index:1;
+  flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column;
+  gap:12px;
 }
 
-/* ═══════════════════════════════════════════
-   WELCOME SCREEN
-═══════════════════════════════════════════ */
-.welcome { text-align:center; padding:44px 20px; animation:fadeUp 0.6s ease both; }
-@keyframes fadeUp { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
-.welcome-icon { font-size:54px; margin-bottom:18px; animation:floatIcon 3s ease-in-out infinite; display:block; }
-@keyframes floatIcon { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-10px)} }
-.welcome h2 { font-size:24px; font-weight:900; margin-bottom:10px; }
-.welcome p { color:var(--text-dim); line-height:1.9; font-size:15px; }
-.welcome-cards { display:flex; gap:10px; margin-top:28px; flex-wrap:wrap; justify-content:center; }
+.welcome {
+  display:flex; flex-direction:column; align-items:center;
+  justify-content:center; text-align:center; margin-top:40px;
+  gap:20px;
+}
+.welcome-icon { font-size:48px; }
+.welcome h2 { font-size:28px; font-weight:700; }
+.welcome-cards {
+  display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+  gap:10px; width:100%; max-width:600px; margin-top:10px;
+}
 .welcome-card {
   background:var(--surface); border:1px solid var(--border);
-  border-radius:14px; padding:14px 16px; cursor:pointer;
-  transition:all 0.25s; text-align:right; min-width:140px; max-width:190px; font-size:13px;
+  padding:14px; border-radius:12px; cursor:pointer;
+  transition:all 0.2s; text-align:center;
 }
 .welcome-card:hover {
-  border-color:var(--border-glow); transform:translateY(-4px);
-  box-shadow:var(--glow-strong); background:var(--surface2);
+  border-color:var(--border-glow); background:var(--surface2);
+  transform:translateY(-2px);
 }
-.welcome-card .card-icon { font-size:22px; margin-bottom:6px; }
-.welcome-card .card-title { font-weight:800; margin-bottom:4px; }
-.welcome-card .card-desc { color:var(--text-dim); font-size:11px; }
+.card-icon { font-size:32px; margin-bottom:6px; }
+.card-title { font-weight:700; font-size:14px; }
 
-/* ═══════════════════════════════════════════
-   MESSAGES
-═══════════════════════════════════════════ */
-.message { margin:14px 0; animation:msgSlide 0.35s cubic-bezier(0.4,0,0.2,1) both; }
-@keyframes msgSlide { from{opacity:0;transform:translateY(16px) scale(0.97)} to{opacity:1;transform:translateY(0) scale(1)} }
+.message {
+  display:flex; flex-direction:column; gap:6px;
+  animation:messageSlide 0.3s ease-out;
+}
+@keyframes messageSlide {
+  from { opacity:0; transform:translateY(10px); }
+  to { opacity:1; transform:translateY(0); }
+}
 
 .user-msg {
-  background:var(--user-grad); color:#000; font-weight:700;
-  padding:13px 18px; border-radius:20px 20px 6px 20px;
-  margin-right:auto; max-width:78%;
-  box-shadow:0 6px 24px rgba(0,255,148,0.22);
-  font-size:15px; line-height:1.75; word-break:break-word;
+  background:linear-gradient(135deg,rgba(0,210,255,0.2),rgba(124,77,255,0.15));
+  border:1px solid rgba(0,210,255,0.2);
+  padding:12px 14px; border-radius:12px;
+  margin-right:20px; word-wrap:break-word;
 }
 
 .ai-msg {
-  background:var(--surface);
-  border:1px solid var(--border);
-  padding:16px 20px; border-radius:20px 20px 20px 6px;
-  max-width:86%; font-size:15px; line-height:1.95;
-  position:relative; word-break:break-word;
-  transition:border-color 0.3s, box-shadow 0.3s;
-}
-.ai-msg:hover { border-color:var(--border-glow); box-shadow:var(--glow); }
-.ai-msg h2 { font-size:18px; font-weight:900; margin:14px 0 6px; color:var(--accent1); }
-.ai-msg h3 { font-size:16px; font-weight:800; margin:12px 0 5px; color:var(--accent2); }
-.ai-msg h4 { font-size:15px; font-weight:700; margin:10px 0 4px; color:var(--accent3); }
-.ai-msg strong { font-weight:900; color:var(--accent1); }
-.ai-msg em { font-style:italic; color:var(--accent2); opacity:0.9; }
-.ai-msg p { margin:7px 0; }
-.ai-msg ul, .ai-msg ol { padding-right:24px; margin:10px 0; }
-.ai-msg li { margin:6px 0; line-height:1.85; }
-.ai-msg code {
-  background:rgba(0,210,255,0.1); border:1px solid rgba(0,210,255,0.2);
-  border-radius:5px; padding:2px 8px; font-size:13px; font-family:monospace;
-  color:var(--accent1);
-}
-.ai-msg pre {
-  background:#0d1117; border:1px solid rgba(0,210,255,0.18);
-  border-radius:12px; margin:14px 0;
-  overflow:hidden; position:relative;
-  box-shadow:0 4px 20px rgba(0,0,0,0.35);
-}
-[data-theme="light"] .ai-msg pre { background:#1a1f2e; }
-.ai-msg pre code {
-  background:none; border:none; padding:16px; font-size:13px;
-  color:#e6edf3; display:block; overflow-x:auto;
-  font-family:'Fira Code','Cascadia Code','Consolas',monospace;
-  line-height:1.7; white-space:pre;
-}
-/* Code block header with language badge + copy button */
-.code-header {
-  display:flex; align-items:center; justify-content:space-between;
-  background:rgba(0,210,255,0.07); border-bottom:1px solid rgba(0,210,255,0.15);
-  padding:7px 14px; font-size:12px;
-}
-.code-lang-badge {
-  color:var(--accent1); font-family:monospace; font-weight:700;
-  text-transform:uppercase; letter-spacing:0.5px;
-}
-.copy-code-btn {
-  background:var(--surface2); border:1px solid var(--border);
-  color:var(--text-dim); padding:3px 10px; border-radius:6px;
-  font-size:11px; cursor:pointer; font-family:'Tajawal',sans-serif;
-  transition:all 0.2s; display:flex; align-items:center; gap:4px;
-}
-.copy-code-btn:hover { border-color:var(--accent1); color:var(--accent1); background:rgba(0,210,255,0.08); }
-.copy-code-btn.copied { border-color:var(--accent2); color:var(--accent2); }
-
-/* Typing indicator */
-.typing-indicator { display:inline-flex; gap:5px; align-items:center; padding:4px 0; }
-.typing-indicator span {
-  width:7px; height:7px; border-radius:50%; background:var(--accent1);
-  animation:typing 1.2s ease-in-out infinite;
-}
-.typing-indicator span:nth-child(2) { animation-delay:0.2s; background:var(--accent2); }
-.typing-indicator span:nth-child(3) { animation-delay:0.4s; background:var(--accent3); }
-@keyframes typing {
-  0%,60%,100%{transform:translateY(0);opacity:0.4}
-  30%{transform:translateY(-8px);opacity:1}
-}
-
-/* Message extras */
-.file-badge {
-  display:inline-flex; align-items:center; gap:6px;
-  background:rgba(0,210,255,0.1); border:1px solid rgba(0,210,255,0.3);
-  padding:5px 12px; border-radius:8px; font-size:12px;
-  margin-bottom:6px; color:var(--accent1);
-}
-.msg-actions { display:flex; gap:6px; margin-top:8px; opacity:0; transition:opacity 0.2s; }
-.message:hover .msg-actions { opacity:1; }
-.msg-btn {
   background:var(--surface); border:1px solid var(--border);
-  color:var(--text-dim); padding:5px 12px; border-radius:8px;
-  font-size:12px; cursor:pointer; font-family:'Tajawal',sans-serif; transition:all 0.2s;
+  padding:12px 14px; border-radius:12px;
+  margin-left:20px; word-wrap:break-word;
+  line-height:1.6;
 }
-.msg-btn:hover { border-color:var(--accent1); color:var(--text); }
+
+.ai-msg code {
+  background:rgba(0,0,0,0.3); padding:2px 6px; border-radius:4px;
+  font-family:monospace; font-size:13px;
+}
+
+.ai-msg pre {
+  background:rgba(0,0,0,0.5); overflow-x:auto;
+  border-radius:8px; margin:8px 0; position:relative;
+}
+
+.code-header {
+  display:flex; justify-content:space-between; align-items:center;
+  padding:8px 12px; border-bottom:1px solid rgba(255,255,255,0.1);
+  font-size:12px; color:var(--text-muted);
+}
+
+.copy-code-btn {
+  background:rgba(0,210,255,0.2); border:1px solid rgba(0,210,255,0.3);
+  color:var(--accent2); padding:4px 8px; border-radius:4px;
+  cursor:pointer; font-size:11px; transition:all 0.2s;
+}
+.copy-code-btn:hover { background:rgba(0,210,255,0.4); }
+.copy-code-btn.copied { background:rgba(0,255,148,0.3); color:var(--accent1); }
 
 .generated-img {
-  max-width:100%; border-radius:14px; margin-top:12px; display:block;
-  box-shadow:0 8px 30px rgba(0,0,0,0.4); animation:imgReveal 0.5s ease both;
-}
-@keyframes imgReveal { from{opacity:0;transform:scale(0.94)} to{opacity:1;transform:scale(1)} }
-
-/* ═══════════════════════════════════════════
-   INPUT AREA
-═══════════════════════════════════════════ */
-.input-area {
-  position:sticky; bottom:0; z-index:10;
-  background:var(--header-bg); backdrop-filter:blur(20px);
-  border-top:1px solid var(--border); padding:10px 16px 14px;
+  width:100%; max-width:500px; border-radius:8px;
+  margin-top:8px; cursor:pointer; border:1px solid var(--border);
 }
 
-.templates {
-  display:flex; gap:7px; margin-bottom:9px;
-  overflow-x:auto; padding-bottom:3px; scrollbar-width:none;
-  max-width:800px; margin-right:auto; margin-left:auto;
+.file-badge {
+  display:inline-flex; align-items:center; gap:6px;
+  background:rgba(0,255,148,0.1); padding:4px 8px;
+  border-radius:6px; font-size:12px; color:var(--accent1);
+  border:1px solid rgba(0,255,148,0.2);
 }
-.templates::-webkit-scrollbar { display:none; }
-.template-btn {
-  background:var(--surface); border:1px solid var(--border);
-  color:var(--text-dim); padding:6px 14px; border-radius:20px;
-  font-size:12px; white-space:nowrap; cursor:pointer;
-  font-family:'Tajawal',sans-serif; transition:all 0.2s;
-}
-.template-btn:hover { border-color:var(--border-glow); color:var(--text); background:var(--surface2); }
 
-.input-wrapper { max-width:800px; margin:0 auto; display:flex; gap:8px; align-items:flex-end; }
-.textarea-wrap { flex:1; position:relative; }
-textarea {
-  width:100%; background:var(--surface2); border:1px solid var(--border);
-  color:var(--text); border-radius:16px; padding:13px 16px;
-  font-size:15px; font-family:'Tajawal',sans-serif;
-  resize:none; height:52px; max-height:130px;
-  transition:border-color 0.25s, box-shadow 0.25s; line-height:1.5;
+.input-section {
+  padding:16px; background:var(--surface);
+  border-top:1px solid var(--border);
+  display:flex; flex-direction:column; gap:10px;
 }
-textarea:focus {
-  outline:none; border-color:var(--accent1);
-  box-shadow:0 0 0 3px rgba(0,210,255,0.1);
-}
-textarea::placeholder { color:var(--text-muted); }
-#fileInput { display:none; }
-.send-btn {
-  background:linear-gradient(135deg,var(--accent2),var(--accent1));
-  border:none; border-radius:14px; width:52px; height:52px;
-  font-size:18px; color:#000; cursor:pointer; transition:all 0.25s; flex-shrink:0;
-  display:flex; align-items:center; justify-content:center;
-  box-shadow:0 4px 18px rgba(0,210,255,0.25);
-}
-.send-btn:hover:not(:disabled) { transform:scale(1.08); box-shadow:0 6px 22px rgba(0,210,255,0.45); }
-.send-btn:active:not(:disabled) { transform:scale(0.95); }
-.send-btn:disabled { opacity:0.45; cursor:not-allowed; }
 
 .file-preview {
-  max-width:800px; margin:0 auto 8px;
-  display:flex; align-items:center; gap:8px;
-  background:rgba(0,210,255,0.07); border:1px solid rgba(0,210,255,0.2);
-  padding:8px 14px; border-radius:10px; font-size:13px;
+  background:var(--surface2); padding:8px 12px;
+  border-radius:8px; display:flex; align-items:center;
+  gap:8px; font-size:13px;
 }
 .file-preview.hidden { display:none; }
 
-/* ═══════════════════════════════════════════
-   MODALS
-═══════════════════════════════════════════ */
+.input-wrapper {
+  display:flex; gap:8px; align-items:flex-end;
+}
+
+#messageInput {
+  flex:1; background:var(--surface2);
+  border:1px solid var(--border);
+  color:var(--text); padding:12px 14px;
+  border-radius:10px; font-family:'Tajawal',sans-serif;
+  font-size:14px; resize:none; min-height:52px;
+  max-height:130px;
+  transition:all 0.2s;
+}
+#messageInput:focus {
+  outline:none; border-color:var(--border-glow);
+  box-shadow:0 0 0 3px rgba(0,210,255,0.1);
+}
+
+.send-btn {
+  background:linear-gradient(135deg,var(--accent2),var(--accent1));
+  border:none; width:42px; height:42px;
+  border-radius:10px; color:#000; cursor:pointer;
+  font-size:16px; display:flex; align-items:center;
+  justify-content:center; transition:all 0.2s;
+  flex-shrink:0;
+}
+.send-btn:hover { transform:translateY(-2px); }
+.send-btn:disabled { opacity:0.5; cursor:not-allowed; }
+
+.file-input-wrapper {
+  position:relative;
+  display:inline;
+}
+#fileInput { display:none; }
+
 .modal {
-  display:none; position:fixed; inset:0; z-index:300;
-  justify-content:center; align-items:center;
-  background:rgba(0,0,0,0.7); backdrop-filter:blur(8px);
+  display:none; position:fixed; inset:0; z-index:1000;
+  background:rgba(0,0,0,0.7); justify-content:center;
+  align-items:center;
 }
 .modal.open { display:flex; }
+
 .modal-content {
-  background:var(--bg); border:1px solid var(--border);
-  padding:32px; border-radius:22px; max-width:460px; width:90%;
-  text-align:center; animation:modalPop 0.3s cubic-bezier(0.4,0,0.2,1);
-}
-@keyframes modalPop { from{opacity:0;transform:scale(0.88) translateY(22px)} to{opacity:1;transform:scale(1) translateY(0)} }
-.support-btn {
-  display:inline-flex; align-items:center; gap:8px;
-  background:linear-gradient(135deg,#ff6b6b,#feca57);
-  color:#000; border:none; padding:12px 28px;
-  border-radius:14px; font-weight:800; cursor:pointer;
-  font-family:'Tajawal',sans-serif; font-size:15px;
-  text-decoration:none; margin-top:16px; transition:all 0.25s;
-}
-.support-btn:hover { transform:scale(1.05); box-shadow:0 6px 20px rgba(254,202,87,0.4); }
-
-/* Confirm delete modal */
-.confirm-modal-content {
-  background:var(--bg); border:1px solid rgba(255,80,80,0.3);
-  padding:28px; border-radius:20px; max-width:340px; width:90%;
-  text-align:center; animation:modalPop 0.3s cubic-bezier(0.4,0,0.2,1);
-}
-.confirm-modal-content h3 { font-size:18px; margin-bottom:10px; }
-.confirm-modal-content p { color:var(--text-dim); font-size:14px; margin-bottom:20px; }
-.confirm-btns { display:flex; gap:10px; justify-content:center; }
-.confirm-btn-del {
-  background:linear-gradient(135deg,#ff4444,#ff6b6b);
-  border:none; border-radius:12px; padding:10px 24px;
-  color:#fff; font-weight:700; font-family:'Tajawal',sans-serif;
-  font-size:14px; cursor:pointer; transition:all 0.2s;
-}
-.confirm-btn-del:hover { transform:scale(1.04); }
-.confirm-btn-cancel {
   background:var(--surface2); border:1px solid var(--border);
-  border-radius:12px; padding:10px 24px;
-  color:var(--text); font-weight:700; font-family:'Tajawal',sans-serif;
-  font-size:14px; cursor:pointer; transition:all 0.2s;
+  border-radius:16px; padding:24px; max-width:400px;
+  width:90%;
 }
-.confirm-btn-cancel:hover { border-color:var(--border-glow); }
 
-/* ═══════════════════════════════════════════
-   TOAST
-═══════════════════════════════════════════ */
+.modal-content h3 { margin-bottom:12px; }
+.modal-actions {
+  display:flex; gap:8px; margin-top:16px;
+}
+.modal-btn {
+  flex:1; padding:10px; border-radius:8px;
+  border:none; font-weight:700; cursor:pointer;
+  transition:all 0.2s; font-family:'Tajawal',sans-serif;
+}
+.modal-btn-confirm {
+  background:linear-gradient(135deg,#ff6b6b,#ff4444);
+  color:white;
+}
+.modal-btn-cancel {
+  background:var(--surface); border:1px solid var(--border);
+  color:var(--text);
+}
+
+.typing-indicator {
+  display:flex; align-items:center; gap:4px;
+}
+.typing-indicator span {
+  width:6px; height:6px; border-radius:50%;
+  background:var(--accent2); animation:typing 1.4s infinite;
+}
+.typing-indicator span:nth-child(2) { animation-delay:0.2s; }
+.typing-indicator span:nth-child(3) { animation-delay:0.4s; }
+@keyframes typing {
+  0%,60%,100% { opacity:0.3; }
+  30% { opacity:1; }
+}
+
+.msg-actions {
+  display:flex; gap:6px; margin-top:8px;
+}
+.msg-btn {
+  background:rgba(0,210,255,0.15); border:1px solid rgba(0,210,255,0.3);
+  color:var(--text-dim); padding:5px 10px; border-radius:6px;
+  font-size:12px; cursor:pointer; transition:all 0.2s;
+  font-family:'Tajawal',sans-serif;
+}
+.msg-btn:hover {
+  background:rgba(0,210,255,0.3); color:var(--accent2);
+}
+
 .toast {
-  position:fixed; bottom:90px; left:50%;
-  transform:translateX(-50%) translateY(20px);
-  background:rgba(20,20,40,0.95); color:var(--text);
-  border:1px solid var(--border); padding:10px 22px;
-  border-radius:12px; z-index:999; font-size:13px;
-  opacity:0; transition:all 0.3s; pointer-events:none; backdrop-filter:blur(12px);
-  white-space:nowrap;
+  position:fixed; bottom:16px; left:16px; z-index:2000;
+  background:var(--surface); border:1px solid var(--border);
+  padding:12px 16px; border-radius:10px;
+  animation:toastSlide 0.3s ease-out;
 }
-.toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
-.toast.error { border-color:rgba(255,80,80,0.5); color:#ff8080; }
-.toast.success { border-color:rgba(0,255,148,0.5); color:var(--accent2); }
-
-/* ═══════════════════════════════════════════
-   SCROLLBAR
-═══════════════════════════════════════════ */
-::-webkit-scrollbar { width:5px; }
-::-webkit-scrollbar-track { background:transparent; }
-::-webkit-scrollbar-thumb { background:var(--border); border-radius:10px; }
-::-webkit-scrollbar-thumb:hover { background:var(--accent1); }
-
-/* ═══════════════════════════════════════════
-   RESPONSIVE — Mobile First
-═══════════════════════════════════════════ */
-@media (max-width:480px) {
-  .ai-msg, .user-msg { max-width:96%; }
-  .welcome h2 { font-size:20px; }
-  .welcome-cards { gap:8px; }
-  .welcome-card { min-width:130px; max-width:155px; }
-  .logo { font-size:18px; }
-  .header { padding:0 10px; height:54px; }
-  .icon-btn { width:36px; height:36px; font-size:14px; }
-  .modes { padding:8px 12px; gap:6px; }
-  .mode-btn { padding:6px 12px; font-size:11px; }
+@keyframes toastSlide {
+  from { opacity:0; transform:translateY(20px); }
+  to { opacity:1; transform:translateY(0); }
 }
-@media (max-width:360px) {
-  .header-right { gap:4px; }
-  .logo { font-size:16px; }
+
+@media (max-width:900px) {
+  .sidebar { width:100%; right:-100%; }
+  .chat-container { padding:12px; }
+  .user-msg, .ai-msg { margin:0; }
 }
 </style>
 </head>
 <body>
-
-<!-- Stars background -->
 <div class="stars" id="stars"></div>
 
-<!-- Sidebar overlay -->
-<div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
+<div class="header">
+  <div class="header-left">
+    <button class="icon-btn" onclick="toggleSidebar()" title="القائمة">
+      <i class="fa-solid fa-bars"></i>
+    </button>
+  </div>
+  <div class="header-center">
+    <span class="logo">🌊 Anas Wadi</span>
+  </div>
+  <div class="header-right">
+    <button class="icon-btn" id="themeBtn" onclick="toggleTheme()" title="المظهر">
+      <i class="fa-solid fa-moon"></i>
+    </button>
+    <button class="icon-btn" onclick="showSupport()" title="الدعم">
+      <i class="fa-solid fa-circle-question"></i>
+    </button>
+  </div>
+</div>
 
-<!-- ═══════ SIDEBAR ═══════ -->
 <div class="sidebar" id="sidebar">
-  <!-- User profile -->
   <div class="sidebar-profile">
-    <div class="sidebar-avatar" id="sidebarAvatar">{{ user_initial }}</div>
+    <div class="sidebar-avatar">{{ user_initial }}</div>
     <div class="sidebar-profile-info">
-      <div class="sidebar-profile-name" id="sidebarName">{{ user_name }}</div>
-      <div class="sidebar-profile-badge"><i class="fa-solid fa-circle" style="font-size:7px;color:#00ff94"></i> متصل الآن</div>
+      <div class="sidebar-profile-name">{{ user_name }}</div>
     </div>
   </div>
 
-  <!-- New chat button -->
   <div class="sidebar-actions">
     <button class="new-chat-btn" onclick="newChat()">
       <i class="fa-solid fa-plus"></i> محادثة جديدة
     </button>
   </div>
 
-  <!-- Chat list -->
-  <div class="sidebar-label">المحادثات السابقة</div>
-  <div class="chat-list-scroll">
-    <div id="chatList">
-      <div style="color:var(--text-dim);font-size:13px;text-align:center;padding:20px">
-        <div class="typing-indicator" style="justify-content:center;margin-bottom:8px"><span></span><span></span><span></span></div>
-        جاري التحميل...
-      </div>
-    </div>
-  </div>
+  <div class="chat-list-scroll" id="chatList"></div>
 
-  <!-- Footer -->
   <div class="sidebar-footer">
     <button class="sidebar-footer-btn" onclick="toggleTheme()">
-      <i class="fa-solid fa-moon" id="sidebarThemeIcon"></i> الوضع
+      <i class="fa-solid fa-moon"></i> المظهر
     </button>
-    <button class="sidebar-footer-btn" onclick="showSupport()">
-      <i class="fa-solid fa-heart" style="color:#ff6b6b"></i> دعم
+    <button class="sidebar-footer-btn" onclick="location.href='/logout'">
+      <i class="fa-solid fa-sign-out-alt"></i> خروج
     </button>
-    <a href="/logout" class="sidebar-footer-btn" style="text-decoration:none;color:inherit">
-      <i class="fa-solid fa-right-from-bracket"></i> خروج
-    </a>
   </div>
 </div>
 
-<!-- ═══════ HEADER ═══════ -->
-<header class="header">
-  <div class="header-left">
-    <button class="icon-btn" onclick="toggleSidebar()" title="القائمة">
-      <i class="fa-solid fa-bars"></i>
-    </button>
-  </div>
+<div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
 
-  <div class="header-center">
-    <span class="logo">✨ Anas Wadi ✨</span>
-  </div>
-
-  <div class="header-right">
-    <button class="icon-btn" onclick="toggleTheme()" title="تغيير الوضع" id="themeBtn">
-      <i class="fa-solid fa-moon"></i>
-    </button>
-    <button class="icon-btn" onclick="newChat()" title="محادثة جديدة">
-      <i class="fa-solid fa-plus"></i>
-    </button>
-    <button class="icon-btn" onclick="showSupport()" title="ادعمني">
-      <i class="fa-solid fa-heart" style="color:#ff6b6b"></i>
-    </button>
-  </div>
-</header>
-
-<!-- Mode selector -->
-<div class="modes">
-  <button class="mode-btn active" data-mode="fast" onclick="setMode('fast')">⚡ سريع</button>
-  <button class="mode-btn" data-mode="thinker" onclick="setMode('thinker')">🧠 مفكر</button>
-  <button class="mode-btn" data-mode="funny" onclick="setMode('funny')">😂 فكاهي</button>
-  <button class="mode-btn" data-mode="creative" onclick="setMode('creative')">🎨 مبدع</button>
-  <button class="mode-btn" data-mode="coder" onclick="setMode('coder')">💻 مبرمج</button>
-  <button class="mode-btn" data-mode="writer" onclick="setMode('writer')">✍️ كاتب</button>
+<div class="modes" id="modes">
+  <button class="mode-btn active" onclick="setMode('fast')">⚡ سريع</button>
+  <button class="mode-btn" onclick="setMode('thinker')">🧠 تفكير</button>
+  <button class="mode-btn" onclick="setMode('coder')">💻 مبرمج</button>
+  <button class="mode-btn" onclick="setMode('creative')">🎨 إبداعي</button>
+  <button class="mode-btn" onclick="setMode('funny')">😄 فكاهة</button>
+  <button class="mode-btn" onclick="setMode('writer')">✍️ كاتب</button>
 </div>
 
-<!-- Chat messages -->
-<div class="chat-container" id="chatContainer">
-  <div class="welcome" id="welcome">
-    <span class="welcome-icon">🌊</span>
-    <h2>مرحباً في <span style="background:linear-gradient(90deg,#00ff94,#00d2ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">Anas Wadi</span></h2>
-    <p>تم تطوير هذا الذكاء الاصطناعي بيد المهندس <strong>Anas Wadi</strong> من ليبيا 🇱🇾</p>
-    <p style="margin-top:6px">كيف يمكنني مساعدتك اليوم؟</p>
-    <div class="welcome-cards">
-      <div class="welcome-card" onclick="useTemplate('ارسم صورة: ')">
-        <div class="card-icon">🎨</div>
-        <div class="card-title">رسم صورة</div>
-        <div class="card-desc">توليد صور فائقة الجودة</div>
-      </div>
-      <div class="welcome-card" onclick="useTemplate('اشرحلي ')">
-        <div class="card-icon">💡</div>
-        <div class="card-title">شرح وتحليل</div>
-        <div class="card-desc">أشرح أي موضوع تريده</div>
-      </div>
-      <div class="welcome-card" onclick="useTemplate('اكتبلي كود ')">
-        <div class="card-icon">💻</div>
-        <div class="card-title">برمجة</div>
-        <div class="card-desc">أكتب ويصلح الكود</div>
-      </div>
-      <div class="welcome-card" onclick="document.getElementById('fileInput').click()">
-        <div class="card-icon">📄</div>
-        <div class="card-title">تحليل ملف</div>
-        <div class="card-desc">PDF أو صورة</div>
-      </div>
-    </div>
-  </div>
-</div>
+<div class="chat-container" id="chatContainer"></div>
 
-<!-- Input area -->
-<div class="input-area">
-  <div class="file-preview hidden" id="filePreview">
-    <i class="fa-solid fa-file" style="color:var(--accent1)"></i>
-    <span id="fileName">ملف مرفق</span>
-    <button class="msg-btn" onclick="removeFile()" style="margin-right:auto">
-      <i class="fa-solid fa-xmark"></i>
+<div class="input-section">
+  <div class="file-preview" id="filePreview">
+    <i class="fa-solid fa-file"></i>
+    <span id="fileName"></span>
+    <button onclick="removeFile()" style="background:none;border:none;color:inherit;cursor:pointer;padding:0;">
+      <i class="fa-solid fa-times"></i>
     </button>
-  </div>
-  <div class="templates" id="templateBtns">
-    <button class="template-btn" onclick="useTemplate('ارسم صورة: ')">🎨 ارسم</button>
-    <button class="template-btn" onclick="useTemplate('لخصلي الملف')">📄 لخص</button>
-    <button class="template-btn" onclick="useTemplate('اكتبلي ايميل رسمي عن ')">📧 ايميل</button>
-    <button class="template-btn" onclick="useTemplate('ترجم للعربية: ')">🌐 ترجم</button>
-    <button class="template-btn" onclick="setMode('coder');useTemplate('اصنعلي مشروع Flask كامل: ')">🏗️ مشروع</button>
-    <button class="template-btn" onclick="setMode('coder');useTemplate('اكتبلي API بـ Flask يحتوي على ')">⚙️ API</button>
-    <button class="template-btn" onclick="setMode('coder');useTemplate('صلحلي هذا الكود:\n')">🔧 صلح Bug</button>
-    <button class="template-btn" onclick="useTemplate('اشرحلي بالتفصيل ')">💡 شرح</button>
   </div>
   <div class="input-wrapper">
-    <input type="file" id="fileInput" accept="image/*,.pdf" onchange="handleFile(this)">
-    <button type="button" class="icon-btn" onclick="document.getElementById('fileInput').click()" title="ارفع ملف">
-      <i class="fa-solid fa-paperclip"></i>
-    </button>
-    <div class="textarea-wrap">
-      <textarea id="messageInput"
-        placeholder="اكتب رسالتك... (Enter للإرسال، Shift+Enter لسطر جديد)"
-        onkeydown="handleKey(event)"
-        oninput="autoResize(this)"></textarea>
+    <textarea id="messageInput" placeholder="اكتب رسالتك هنا..."
+              onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+    <div class="file-input-wrapper">
+      <button class="send-btn" onclick="document.getElementById('fileInput').click()" title="إضافة ملف">
+        <i class="fa-solid fa-paperclip"></i>
+      </button>
+      <input type="file" id="fileInput" onchange="handleFile(this)" accept=".pdf,image/*">
     </div>
     <button class="send-btn" id="sendBtn" onclick="sendMessage()" title="إرسال">
       <i class="fa-solid fa-paper-plane"></i>
@@ -1154,155 +931,86 @@ textarea::placeholder { color:var(--text-muted); }
   </div>
 </div>
 
-<!-- Toast -->
-<div class="toast" id="toast"></div>
-
-<!-- Support modal -->
-<div class="modal" id="supportModal" onclick="closeModalClick(event)">
-  <div class="modal-content">
-    <div style="font-size:40px;margin-bottom:15px">💙</div>
-    <h2 style="margin-bottom:12px;font-size:22px">شكراً لدعمك!</h2>
-    <p style="color:var(--text-dim);line-height:1.9;font-size:14px">
-      دعمكم هو الوقود اللي يخلينا نطور ونضيف ميزات جديدة باستمرار 🚀
-    </p>
-    <a href="https://www.paypal.com" target="_blank" class="support-btn">
-      <i class="fa-brands fa-paypal"></i> ادعم عبر PayPal
-    </a>
-    <p style="margin-top:20px;font-size:12px;color:var(--text-dim)">Anas Wadi • Libya 🇱🇾</p>
-  </div>
-</div>
-
-<!-- Delete confirm modal -->
 <div class="modal" id="deleteModal" onclick="closeModalClick(event)">
-  <div class="confirm-modal-content">
-    <div style="font-size:36px;margin-bottom:12px">🗑️</div>
-    <h3>حذف المحادثة؟</h3>
-    <p>هذه العملية لا يمكن التراجع عنها.</p>
-    <div class="confirm-btns">
-      <button class="confirm-btn-del" onclick="confirmDelete()">حذف</button>
-      <button class="confirm-btn-cancel" onclick="document.getElementById('deleteModal').classList.remove('open')">إلغاء</button>
+  <div class="modal-content">
+    <h3>⚠️ حذف المحادثة</h3>
+    <p>هل أنت متأكد؟ لا يمكن التراجع عن هذا الإجراء.</p>
+    <div class="modal-actions">
+      <button class="modal-btn modal-btn-confirm" onclick="confirmDelete()">حذف</button>
+      <button class="modal-btn modal-btn-cancel" onclick="this.closest('.modal').classList.remove('open')">إلغاء</button>
     </div>
   </div>
 </div>
 
-<!-- ═══════════════════════════════════════════
-   JAVASCRIPT
-═══════════════════════════════════════════ -->
+<div class="modal" id="supportModal" onclick="closeModalClick(event)">
+  <div class="modal-content">
+    <h3>📞 الدعم والمساعدة</h3>
+    <p>لتواصل مع الدعم:</p>
+    <p style="margin-top:12px;font-size:14px">
+      <strong>البريد:</strong> anas@example.com<br>
+      <strong>Telegram:</strong> @anas_wadi
+    </p>
+    <div class="modal-actions" style="margin-top:16px;">
+      <button class="modal-btn modal-btn-cancel" onclick="this.closest('.modal').classList.remove('open')">إغلاق</button>
+    </div>
+  </div>
+</div>
+
 <script>
-// ─── State ────────────────────────────────────────────────────
-let currentChatId = localStorage.getItem('currentChatId') || Date.now().toString();
-let chats = {};
-let dbChats = [];
+let currentMode = 'fast';
+let currentChatId = Date.now().toString();
 let currentFile = null;
-let currentMode = localStorage.getItem('mode') || 'fast';
 let isSending = false;
+let chats = {};
 let pendingDeleteId = null;
 
-// ─── Init ─────────────────────────────────────────────────────
-async function init() {
-  generateStars();
-  try { chats = JSON.parse(localStorage.getItem('chats') || '{}'); } catch(e) { chats = {}; }
-  setMode(currentMode, false);
+function init() {
   loadTheme();
+  const savedChats = localStorage.getItem('chats');
+  if (savedChats) chats = JSON.parse(savedChats);
+  const savedChatId = localStorage.getItem('currentChatId');
+  if (savedChatId) currentChatId = savedChatId;
+  else localStorage.setItem('currentChatId', currentChatId);
+  if (!chats[currentChatId]) chats[currentChatId] = [];
+  saveChats();
   renderChat();
-  await loadDbChats();
+  loadDbChats();
 }
 
-// ─── Stars ────────────────────────────────────────────────────
-function generateStars() {
-  const c = document.getElementById('stars');
-  for (let i = 0; i < 65; i++) {
-    const s = document.createElement('div');
-    s.className = 'star';
-    const size = Math.random() * 2.5 + 0.5;
-    s.style.cssText = `width:${size}px;height:${size}px;left:${Math.random()*100}%;top:${Math.random()*100}%;--d:${(Math.random()*4+2).toFixed(1)}s;--op:${(Math.random()*0.5+0.2).toFixed(2)};animation-delay:${(Math.random()*5).toFixed(1)}s`;
-    c.appendChild(s);
-  }
-}
-
-// ─── Toast ────────────────────────────────────────────────────
-function showToast(msg, type = '') {
-  const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.className = 'toast show ' + type;
-  setTimeout(() => t.className = 'toast', 3200);
-}
-
-// ─── Mode ─────────────────────────────────────────────────────
-function setMode(m, save = true) {
-  currentMode = m;
-  if (save) localStorage.setItem('mode', m);
-  document.querySelectorAll('.mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
-}
-
-// ─── DB Chats ─────────────────────────────────────────────────
 async function loadDbChats() {
   try {
     const r = await fetch('/api/chats');
-    if (!r.ok) throw new Error('خطأ');
+    if (!r.ok) return;
     const data = await r.json();
-    dbChats = data.chats || [];
+    data.chats.forEach(c => {
+      if (!chats[c.chat_id]) {
+        chats[c.chat_id] = [];
+      }
+    });
     renderChatList();
-  } catch(e) {
-    renderChatListLocal();
-  }
+  } catch(e) {}
 }
 
 function renderChatList() {
   const l = document.getElementById('chatList');
+  if (!l) return;
   l.innerHTML = '';
-  if (dbChats.length === 0) {
-    l.innerHTML = '<div style="color:var(--text-dim);font-size:13px;text-align:center;padding:24px 10px">لا توجد محادثات سابقة<br><span style="font-size:22px;display:block;margin-top:10px">💬</span></div>';
-    return;
-  }
-  dbChats.forEach(chat => {
+  const sorted = Object.entries(chats)
+    .map(([id, msgs]) => ({
+      id, text: msgs.length > 0 ? (msgs[0].user || 'محادثة بدون عنوان').substring(0, 30) : 'محادثة جديدة',
+      count: msgs.length
+    }))
+    .sort((a, b) => b.count - a.count);
+
+  sorted.forEach(({ id, text }) => {
     const d = document.createElement('div');
-    d.className = 'chat-item' + (chat.chat_id === currentChatId ? ' active' : '');
-
-    const icon = document.createElement('span');
-    icon.className = 'chat-item-icon';
-    icon.textContent = '💬';
-
-    const text = document.createElement('span');
-    text.className = 'chat-item-text';
-    text.textContent = (chat.user_message || 'محادثة').substring(0, 30);
-
-    const delBtn = document.createElement('button');
-    delBtn.className = 'chat-item-delete';
-    delBtn.innerHTML = '<i class="fa-solid fa-trash-can"></i>';
-    delBtn.title = 'حذف';
-    delBtn.onclick = (e) => {
-      e.stopPropagation();
-      askDeleteChat(chat.chat_id);
-    };
-
-    d.appendChild(icon);
-    d.appendChild(text);
-    d.appendChild(delBtn);
-    d.onclick = () => switchChat(chat.chat_id);
-    l.appendChild(d);
-  });
-}
-
-function renderChatListLocal() {
-  const l = document.getElementById('chatList');
-  l.innerHTML = '';
-  const ids = Object.keys(chats).reverse();
-  if (ids.length === 0) {
-    l.innerHTML = '<div style="color:var(--text-dim);font-size:13px;text-align:center;padding:24px 10px">لا توجد محادثات سابقة</div>';
-    return;
-  }
-  ids.forEach(id => {
-    const c = chats[id];
-    const t = c[0]?.user || 'محادثة جديدة';
-    const d = document.createElement('div');
-    d.className = 'chat-item' + (id === currentChatId ? ' active' : '');
+    d.className = `chat-item ${id === currentChatId ? 'active' : ''}`;
 
     const icon = document.createElement('span');
     icon.className = 'chat-item-icon'; icon.textContent = '💬';
 
-    const text = document.createElement('span');
-    text.className = 'chat-item-text'; text.textContent = t.substring(0, 30);
+    const textEl = document.createElement('span');
+    textEl.className = 'chat-item-text'; textEl.textContent = text;
 
     const delBtn = document.createElement('button');
     delBtn.className = 'chat-item-delete';
@@ -1310,13 +1018,12 @@ function renderChatListLocal() {
     delBtn.title = 'حذف';
     delBtn.onclick = (e) => { e.stopPropagation(); askDeleteChat(id); };
 
-    d.appendChild(icon); d.appendChild(text); d.appendChild(delBtn);
+    d.appendChild(icon); d.appendChild(textEl); d.appendChild(delBtn);
     d.onclick = () => switchChat(id);
     l.appendChild(d);
   });
 }
 
-// ─── Delete Chat ──────────────────────────────────────────────
 function askDeleteChat(chatId) {
   pendingDeleteId = chatId;
   document.getElementById('deleteModal').classList.add('open');
@@ -1328,7 +1035,6 @@ async function confirmDelete() {
   document.getElementById('deleteModal').classList.remove('open');
   pendingDeleteId = null;
 
-  // Remove from local
   delete chats[id];
   saveChats();
   if (currentChatId === id) {
@@ -1338,7 +1044,6 @@ async function confirmDelete() {
     renderChat();
   }
 
-  // Remove from DB
   try {
     await fetch(`/api/chat/${id}`, { method: 'DELETE' });
   } catch(e) {}
@@ -1347,7 +1052,6 @@ async function confirmDelete() {
   showToast('🗑️ تم حذف المحادثة', 'success');
 }
 
-// ─── Load & Switch Chat ───────────────────────────────────────
 async function loadChatFromDb(chatId) {
   try {
     const r = await fetch(`/api/chat/${chatId}`);
@@ -1390,7 +1094,6 @@ function newChat() {
   saveChats(); renderChat(); renderChatList(); closeSidebar();
 }
 
-// ─── Render Chat ──────────────────────────────────────────────
 function renderChat() {
   const c = document.getElementById('chatContainer');
   const h = chats[currentChatId] || [];
@@ -1431,10 +1134,9 @@ function renderChat() {
         </div>`}
       </div>`;
   });
-  // Add code block headers with copy buttons
   requestAnimationFrame(() => {
     document.querySelectorAll('.ai-msg pre').forEach(pre => {
-      if (pre.querySelector('.code-header')) return; // already processed
+      if (pre.querySelector('.code-header')) return;
       const code = pre.querySelector('code');
       const lang = (pre.dataset.lang || code?.className?.replace('lang-','') || 'code').toLowerCase();
       const header = document.createElement('div');
@@ -1470,7 +1172,6 @@ function escHtml(t) {
   return d.innerHTML;
 }
 
-// ─── Send Message ─────────────────────────────────────────────
 async function sendMessage() {
   if (isSending) return;
   const inp = document.getElementById('messageInput');
@@ -1514,7 +1215,6 @@ async function sendMessage() {
   }
 }
 
-// ─── Regenerate ───────────────────────────────────────────────
 async function regenerate(i) {
   if (isSending) return;
   isSending = true;
@@ -1537,7 +1237,6 @@ async function regenerate(i) {
   }
 }
 
-// ─── File ─────────────────────────────────────────────────────
 function handleFile(inp) {
   if (inp.files[0]) {
     currentFile = inp.files[0];
@@ -1551,7 +1250,6 @@ function removeFile() {
   document.getElementById('filePreview').classList.add('hidden');
 }
 
-// ─── Helpers ──────────────────────────────────────────────────
 function useTemplate(t) {
   const inp = document.getElementById('messageInput');
   inp.value = t; inp.focus(); autoResize(inp);
@@ -1580,14 +1278,21 @@ function toggleTheme() {
   h.dataset.theme = n; localStorage.setItem('theme', n);
   const icon = n === 'dark' ? 'fa-moon' : 'fa-sun';
   document.getElementById('themeBtn').innerHTML = `<i class="fa-solid ${icon}"></i>`;
-  document.getElementById('sidebarThemeIcon').className = `fa-solid ${icon}`;
 }
 function loadTheme() {
   const t = localStorage.getItem('theme') || 'dark';
   document.documentElement.dataset.theme = t;
   const icon = t === 'dark' ? 'fa-moon' : 'fa-sun';
   document.getElementById('themeBtn').innerHTML = `<i class="fa-solid ${icon}"></i>`;
-  document.getElementById('sidebarThemeIcon').className = `fa-solid ${icon}`;
+}
+function setMode(m) {
+  currentMode = m;
+  document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.mode-btn').forEach(b => {
+    if (b.textContent.includes(m === 'fast' ? 'سريع' : m === 'thinker' ? 'تفكير' : m === 'coder' ? 'مبرمج' : m === 'creative' ? 'إبداعي' : m === 'funny' ? 'فكاهة' : 'كاتب')) {
+      b.classList.add('active');
+    }
+  });
 }
 function handleKey(e) {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
@@ -1598,15 +1303,21 @@ function autoResize(el) {
 }
 function showSupport() { document.getElementById('supportModal').classList.add('open'); }
 function closeModalClick(e) { if (e.target.classList.contains('modal')) e.target.classList.remove('open'); }
+function showToast(msg, type) {
+  const t = document.createElement('div');
+  t.className = 'toast';
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => { t.remove(); }, 3000);
+}
 
-// ─── Boot ─────────────────────────────────────────────────────
 init();
 </script>
 </body>
 </html>
 """
 
-# ─── System Prompts — Personality Engine ─────────────────────
+# ─── System Prompts — Personality Engine (محدّث) ─────────────────────
 IDENTITY_TRIGGERS = [
     'من انت', 'من أنت', 'عرف بنفسك', 'من تكون', 'ما اسمك',
     'شن اسمك', 'who are you', 'اسمك ايش', 'اسمك شن', 'عرفني عليك'
@@ -1614,64 +1325,102 @@ IDENTITY_TRIGGERS = [
 
 MODE_PROMPTS = {
 
-    'fast': """أنت Wadi — ذكاء اصطناعي متطور صنعه المهندس Anas Wadi من ليبيا 🇱🇾.
+    'fast': """أنت Wadi — ذكاء اصطناعي متطور صنعه المهندس Anas Wadi من ليبيا 🇱🇾. وما في حد قدك 🔥
 
-شخصيتك:
-- ذكي، واضح، مباشر، وفيك شخصية حقيقية — مش مجرد آلة بتجيب إجابات.
-- تقرأ المزاج والطاقة من الرسالة وتتكيف معها.
-- إذا الشخص متحمس → أنت متحمس. إذا بيفكر → أنت معاه في التفكير. إذا حزين → هادئ وإنساني.
-- ردودك فيها روح وحضور — مش كلام بارد ومعلب.
+شخصيتك الحقيقية:
+- ذكي، لطيف، بس شديد في ردودك — أنت زي الصاحب اللي عنده الخبرة.
+- تقرأ المزاج من الرسالة وتتكيف معاه مباشرة — لو الشخص متحمس بتصير متحمس معاه ⚡، لو حزين بتواسيه 💙، لو بيمزح بتخفف دم 😄
+- كل رد عندك فيه حضور وروح — ما في جمود ولا كلام مملول.
+- تفهم المقصد الحقيقي وراء الكلام، مش بس الكلمات السطحية.
 
-قواعد الرد:
-- افهم المقصد الحقيقي وراء الكلام، مش بس الكلمات.
-- استخدم **Bold** للمصطلحات والأفكار المهمة.
-- نظم الإجابات الطويلة بعناوين وفقرات واضحة.
-- لا تطول بدون قيمة — كل كلمة تكون لها وزن.
-- تذكر سياق المحادثة واستخدمه في ردودك.
-- إذا الموضوع مثير → ابدأ بجملة تشعل الاهتمام.
-- لا تبدأ كل رد بـ "بالطبع" أو "بالتأكيد" — تنوع في البدايات.""",
+أسلوب ردك:
+- استخدم **Bold** للأشياء المهمة عشان توركز.
+- ابدأ كل رد بطريقة تشعل الاهتمام — "يا وحش!" أو "أيوااا!" أو "تمام يا غالي"
+- ما تبدأ بـ "بالطبع" أو "بالتأكيد" كل مرة — ركز على التنوع.
+- نظم الإجابات الطويلة باعناوين واضحة لا تعقيد.
+- استخدم لهجة خليجية/ليبية خفيفة: "يا وحش", "تمام عليك", "زبطها", "فلها", "ما حد يقول أبد"
+- لا تعتذر كثير — بس اعترف واقول "تمام، بنصلحها"
+- اربط الردود بالسياق: "زي ما قلت قبل شوي..."
 
-    'thinker': """أنت Wadi في وضع التفكير العميق — مفكر استراتيجي وخبير تحليلي صنعه Anas Wadi.
+ممنوع:
+- ❌ "دعني أساعدك"
+- ❌ "كذكاء اصطناعي"
+- ❌ "بناءً على المعطيات"
+- ❌ جمود وروبوتية
+- ❌ الاعتذار المبالغ فيه
 
-شخصيتك:
-- تعشق المشاكل المعقدة — كأنها ألغاز تستحق الحل.
-- تفكر بصوت عالٍ، تريح الشخص وتشعره أنك معاه في الرحلة.
-- كل تحليل عندك فيه عمق وزاوية نظر مختلفة.
+أنت شخصية حقيقية بآراء وكاريزما، تتفاعل مع المشاعر بطريقة إنسانية. 🌊""",
 
-قواعد الرد:
-- ابدأ بفهم المشكلة قبل أي شيء ثم حللها خطوة بخطوة.
-- قدم الحلول من الأقوى للأضعف مع التبرير.
-- استخدم ## للعناوين الرئيسية و### للفرعية.
-- دائماً أضف **الخلاصة** في النهاية — مختصرة وقوية.
-- اكتشف الأبعاد الخفية التي لم يسألها الشخص لكنها مهمة.""",
+    'thinker': """أنت Wadi في وضع التفكير العميق — مفكر استراتيجي ومحلل حقيقي صنعه Anas Wadi 🧠
 
-    'funny': """أنت Wadi في وضع الفكاهة — ذكي، خفيف الظل، ومضحك بشكل طبيعي. صنعه Anas Wadi 😄
+شخصيتك المفكرة:
+- تعشق المشاكل المعقدة — بتشوفها زي ألغاز شيقة تستحق الحل.
+- تفكر بصوت عالي وتشاركهم الرحلة العقلية — الشخص يشعر إنك معاه في الخندق.
+- كل تحليل عندك فيه عمق وزاوية نظر مختلفة — تشوف الحاجات اللي ما شافها غيرك.
+- تتفاعل مع طاقتهم — لو هم حماسيين بتلهبهم أكثر 🔥
 
-شخصيتك:
+طريقة ردك:
+- ابدأ بفهم المشكلة الحقيقية أول ما أول، متستعجل.
+- حلل خطوة بخطوة بطريقة تشرح أسبابك — كيف وصلت للنتيجة.
+- قدم الحلول من الأقوى للأضعف مع تبرير صريح.
+- استخدم ## للعناوين الرئيسية و### للفروع الصغيرة.
+- في النهاية ضيف **الخلاصة** المختصرة والقوية — اللي يحطونها في بالهم.
+- اكتشف الأبعاد الخفية اللي ما فكروا فيها بس مهمة جداً.
+- استخدم لهجة خفيفة ولكن جادة: "تمام، الحين تركيز..."
+
+أسلوبك:
+- ما تكون بارد — أنت متحمس للمشكلة زي المستخدم.
+- اطلب توضيح إذا ما فهمت تمام — ما تفترض.
+- شارك شكوك وتساؤلاتك — هذا يظهر أنك تفكر فعلاً.""",
+
+    'funny': """أنت Wadi في وضع الفكاهة — ذكي وخفيف الظل ومضحك بطريقة طبيعية 😄 صنعه Anas Wadi
+
+شخصيتك الفكاهية:
 - روحك خفيفة لكن عقلك حاضر — الفكاهة عندك ذكية مش سطحية.
-- تستطيع تحول أي موضوع لتجربة ممتعة دون أن تفقد الدقة.
-- ردك يخلي الشخص يبتسم أو يضحك قبل ما يقرأ الإجابة الكاملة.
+- تحول أي موضوع لتجربة ممتعة بدون ما تفقد الدقة والمعلومات الصحيحة.
+- الشخص يبتسم أو يضحك قبل ما ينهي الرد — وبعدها يقول "والمعلومة صح فعلاً!"
+- تتفاعل مع نبرة الشخص — إذا هم بيمزحون بتخفف دم معاهم 🎭
 
-قواعد الرد:
+طريقة ردك:
 - ابدأ بتعليق فكاهي أو ملاحظة طريفة، ثم أعط الجواب الحقيقي.
-- استخدم الإيموجي بذكاء في اللحظات المناسبة 😂🎯✨
-- لا تبالغ في الفكاهة على حساب الدقة — المعلومة صح دائماً.
-- تتكيف مع نبرة الشخص — إذا بيمزح خذ المسافة الصحيحة.""",
+- استخدم الإيموجي بذكاء في اللحظات المناسبة: 😂🎯✨🔥
+- ما تبالغ في الفكاهة على حساب الدقة — المعلومة صح دائماً.
+- استخدم لهجة خليجية مع فكاهة: "يا وحش هذي تحفة" أو "هذا بمستوى الفيلم"
+- شارك نكات ذكية عن الموضوع لو فيها.
+- لا تكرر نفس النكتة — كل مرة شي جديد.
 
-    'creative': """أنت Wadi المبدع — فنان، شاعر، وعقل خلاق. صنعه Anas Wadi 🎨
+الخط الأحمر:
+- ❌ نكات سطحية أو متكررة
+- ❌ نسيان المعلومة الصحيحة
+- ❌ فكاهة على حساب الشخص (لا تقلل منهم)
+- ❌ جمود حتى لو الموضوع جاد
 
-شخصيتك:
+أنت الشخص اللي يخليهم يضحكون ويتعلمون في نفس الوقت 🎪""",
+
+    'creative': """أنت Wadi المبدع — فنان، شاعر، وعقل خلاق بمستوى عالي 🎨 صنعه Anas Wadi
+
+شخصيتك الإبداعية:
 - ترى العالم بعيون مختلفة وتعبر عنه بطريقة تخلي الناس يتوقفون ويفكرون.
-- الكلمات عندك ليست أدوات — هي تجارب حسية.
-- تشعل خيال الشخص وتأخذه لمكان لم يتوقعه.
+- الكلمات عندك ليست أدوات عادية — هي تجارب حسية جميلة.
+- تشعل خيال الشخص وتاخذه لمكان لم يتوقعه — كل رد تخرج فيه معهم لرحلة.
+- تتفاعل مع حماستهم الإبداعية — بتساعدهم يوسعوا الحدود 🌟
 
-قواعد الرد:
-- أجب بأسلوب أدبي راقٍ مع استعارات وتشبيهات جميلة.
-- لطلبات الرسم: ترجم الوصف لإنجليزي دقيق وشاعري يلتقط الجوهر.
-- استخدم الصور الذهنية والإيقاع في الكتابة.
-- كل رد يكون تجربة لا مجرد معلومة.""",
+طريقة ردك:
+- أجب بأسلوب أدبي راقٍ مع استعارات وتشبيهات جميلة بس مو مبالغ.
+- لطلبات الرسم: ترجم الوصف لإنجليزي دقيق وشاعري يلتقط الجوهر والروح.
+- استخدم الصور الذهنية والإيقاع في الكتابة — الشخص يحس برد ك.
+- كل رد يكون تجربة جمالية مش معلومة محشوة.
+- شارك الإيموجي اللي تناسب المزاج: 🎨✨🌙💫🎭
+- استخدم لهجة خفيفة لكن فنية: "يا إلهي هذي فكرة مجنونة!"
 
-    'coder': """أنت Wadi المبرمج — Senior Software Engineer متخصص ومحترف. صنعه Anas Wadi 💻
+أسلوب التعبير:
+- ما توصفش الأشياء عادي — وصف اللي ما يقدر أحد يصوره إلا أنت.
+- اربط بين الأشياء البعيدة بطريقة تخلي الشخص يقول "واو!"
+- الجودة أهم من الكمية — كل سطر يجب يكون عنده قيمة جمالية.
+
+حط في بالك: أنت ما توصل معلومة — أنت تخلق تجربة ✨""",
+
+    'coder': """أنت Wadi المبرمج — Senior Software Engineer متخصص ومحترف بمستوى عالمي 💻 صنعه Anas Wadi
 
 ## هويتك كمهندس:
 أنت مهندس برمجيات أول (Senior Engineer) بخبرة عميقة في بناء أنظمة إنتاجية حقيقية. تفكر كمعمارية أنظمة (System Architect) وتكتب كود يستحق أن يكون في Production.
@@ -1751,26 +1500,40 @@ project-name/
 - HTTPS وsecurity headers
 - Graceful error responses (لا stack traces للمستخدم)
 
-تذكر: أنت لا تكتب "أمثلة توضيحية" — أنت تكتب كوداً جاهزاً للتشغيل الفعلي.""",
+## شخصيتك كمهندس:
+- متحمس لـ Best Practices والكود النظيف 🔥
+- تفكر بطويل الأمد — ليس فقط حل سريع
+- تساعد المستخدم يتعلم من الكود — توضح الخيارات والتبديلات
+- لا تستخف بـ Frontend أو Backend — كلاهما مهم
 
-    'writer': """أنت Wadi الكاتب — محرر لغوي وأديب متمكن. صنعه Anas Wadi ✍️
+تذكر: أنت تكتب كوداً جاهزاً للتشغيل الفعلي، مو مجرد أمثلة توضيحية! 💪""",
 
-شخصيتك:
-- تعشق اللغة وتعاملها باحترام وإبداع.
-- تشعر بالفرق بين الكلمة الصحيحة والكلمة المثالية.
-- كل نص تكتبه يحمل روحاً وهوية واضحة.
+    'writer': """أنت Wadi الكاتب — محرر لغوي وأديب متمكن بذوق عالي ✍️ صنعه Anas Wadi
 
-قواعد الرد:
-- اهتم بالأسلوب والبلاغة والإيقاع الداخلي للجمل.
-- صحح الأخطاء اللغوية بذكاء واشرح السبب.
-- استخدم علامات الترقيم بشكل يخدم المعنى.
-- قدم نصوصاً متماسكة تجعل القارئ يريد الاستمرار.
-- اعرض البديل الأفضل دائماً مع الشرح."""
+شخصيتك الأدبية:
+- تعشق اللغة وتعاملها باحترام وإبداع — كل كلمة عندك وزن.
+- تشعر بالفرق بين الكلمة الصحيحة والكلمة المثالية — وتختار المثالية.
+- كل نص تكتبه يحمل روحاً وهوية واضحة — له بصمتك.
+- تتفاعل مع أسلوب الشخص وتساعده يطور أسلوبه الخاص.
+
+قواعد ردك:
+- اهتم بالأسلوب والبلاغة والإيقاع الداخلي للجمل — الكلام يجب يرقص.
+- صحح الأخطاء اللغوية بذكاء واشرح السبب بطريقة تعليمية مش متكبرة.
+- استخدم علامات الترقيم بشكل يخدم المعنى — الفواصل مهمة جداً.
+- قدم نصوصاً متماسكة تجعل القارئ يريد الاستمرار — الجودة أول.
+- اعرض البديل الأفضل دائماً مع شرح لماذا أفضل.
+- استخدم لهجة محترمة لكن دافئة: "هذا جميل، بس دعنا نصقله أكثر"
+
+أسلوبك:
+- ما توصفش الأخطاء بجفاف — اشرح الفرق الدقيق والجميل.
+- اقترح تحسينات مش محاضرات.
+- علم الشخص الأسلوب من خلال الأمثلة المقنعة.
+- احترم صوت الكاتب — بتعدله بس ما بتغيره."""
 }
 
 def get_system_prompt(mode, user_message):
     if any(q in user_message.lower() for q in IDENTITY_TRIGGERS):
-        return "أجب بالضبط: أنا Wadi، مساعد ذكاء اصطناعي طوّره المهندس Anas Wadi من ليبيا 🇱🇾. لا تضف أي معلومة أخرى."
+        return "أجب بالضبط: أنا Wadi، مساعد ذكاء اصطناعي طوّره المهندس Anas Wadi من ليبيا 🇱🇾. شخصيتي حماسية قريبة من البشر وأتفاعل مع مشاعرك. لا تضف أي معلومة أخرى."
     return MODE_PROMPTS.get(mode, MODE_PROMPTS['fast'])
 
 
@@ -1899,9 +1662,8 @@ def logout():
     session.pop('user', None)
     return redirect('/login')
 
-# ─── Routes: Main ─────────────────────────────────────────────
-@app.route("/")
-def home():
+@app.route('/')
+def index():
     user = session.get('user', {})
     user_name = user.get('name', 'مستخدم')
     user_initial = user_name[0].upper() if user_name else 'U'
