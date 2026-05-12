@@ -2047,6 +2047,10 @@ def chat():
         'fast':     'llama-3.1-8b-instant',
         'funny':    'llama-3.1-8b-instant',
     }
+    # Fallback if Qwen3 hits rate limit
+    fallback_map = {
+        'qwen/qwen3-32b': 'llama-3.3-70b-versatile',
+    }
     temp_map = {
         'funny':    0.92,
         'creative': 0.88,
@@ -2059,24 +2063,33 @@ def chat():
     temperature = temp_map.get(mode, 0.72)
     max_tokens = max_tokens_map.get(mode, 2048)
 
-    # Qwen3 supports reasoning_effort — enable for coder/thinker
+    # Qwen3: use reasoning_effort=none to save tokens (still smarter than llama)
     extra_params = {}
-    if mode in ('coder', 'thinker') and model == 'qwen/qwen3-32b':
-        extra_params['reasoning_effort'] = 'default'
+    if model == 'qwen/qwen3-32b':
+        extra_params['reasoning_effort'] = 'none'
 
     messages.append({"role": "user", "content": user_message or "مرحبا"})
 
-    try:
-        resp = requests.post(
+    def call_api(m):
+        return requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
             json={
-                "model": model, "messages": messages, "max_tokens": max_tokens,
+                "model": m, "messages": messages, "max_tokens": max_tokens,
                 "temperature": temperature, "top_p": 0.92, "stream": False,
                 **extra_params
             },
             timeout=90
         )
+
+    try:
+        resp = call_api(model)
+        # Auto-fallback if rate limited
+        if not resp.ok and resp.json().get('error', {}).get('code') == 'rate_limit_exceeded':
+            fallback = fallback_map.get(model)
+            if fallback:
+                extra_params.clear()
+                resp = call_api(fallback)
         result = resp.json()
         if resp.ok:
             raw = result["choices"][0]["message"]["content"]
