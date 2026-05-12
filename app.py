@@ -784,12 +784,36 @@ body::before {
   color:var(--accent1);
 }
 .ai-msg pre {
-  background:rgba(0,0,0,0.45); border:1px solid var(--border);
-  border-radius:12px; padding:16px; margin:12px 0;
-  overflow-x:auto; position:relative;
+  background:#0d1117; border:1px solid rgba(0,210,255,0.18);
+  border-radius:12px; margin:14px 0;
+  overflow:hidden; position:relative;
+  box-shadow:0 4px 20px rgba(0,0,0,0.35);
 }
-[data-theme="light"] .ai-msg pre { background:rgba(0,0,0,0.06); }
-.ai-msg pre code { background:none; border:none; padding:0; font-size:13px; color:var(--accent2); }
+[data-theme="light"] .ai-msg pre { background:#1a1f2e; }
+.ai-msg pre code {
+  background:none; border:none; padding:16px; font-size:13px;
+  color:#e6edf3; display:block; overflow-x:auto;
+  font-family:'Fira Code','Cascadia Code','Consolas',monospace;
+  line-height:1.7; white-space:pre;
+}
+/* Code block header with language badge + copy button */
+.code-header {
+  display:flex; align-items:center; justify-content:space-between;
+  background:rgba(0,210,255,0.07); border-bottom:1px solid rgba(0,210,255,0.15);
+  padding:7px 14px; font-size:12px;
+}
+.code-lang-badge {
+  color:var(--accent1); font-family:monospace; font-weight:700;
+  text-transform:uppercase; letter-spacing:0.5px;
+}
+.copy-code-btn {
+  background:var(--surface2); border:1px solid var(--border);
+  color:var(--text-dim); padding:3px 10px; border-radius:6px;
+  font-size:11px; cursor:pointer; font-family:'Tajawal',sans-serif;
+  transition:all 0.2s; display:flex; align-items:center; gap:4px;
+}
+.copy-code-btn:hover { border-color:var(--accent1); color:var(--accent1); background:rgba(0,210,255,0.08); }
+.copy-code-btn.copied { border-color:var(--accent2); color:var(--accent2); }
 
 /* Typing indicator */
 .typing-indicator { display:inline-flex; gap:5px; align-items:center; padding:4px 0; }
@@ -1103,12 +1127,14 @@ textarea::placeholder { color:var(--text-muted); }
       <i class="fa-solid fa-xmark"></i>
     </button>
   </div>
-  <div class="templates">
+  <div class="templates" id="templateBtns">
     <button class="template-btn" onclick="useTemplate('ارسم صورة: ')">🎨 ارسم</button>
     <button class="template-btn" onclick="useTemplate('لخصلي الملف')">📄 لخص</button>
     <button class="template-btn" onclick="useTemplate('اكتبلي ايميل رسمي عن ')">📧 ايميل</button>
     <button class="template-btn" onclick="useTemplate('ترجم للعربية: ')">🌐 ترجم</button>
-    <button class="template-btn" onclick="useTemplate('اكتبلي كود بلغة ')">💻 كود</button>
+    <button class="template-btn" onclick="setMode('coder');useTemplate('اصنعلي مشروع Flask كامل: ')">🏗️ مشروع</button>
+    <button class="template-btn" onclick="setMode('coder');useTemplate('اكتبلي API بـ Flask يحتوي على ')">⚙️ API</button>
+    <button class="template-btn" onclick="setMode('coder');useTemplate('صلحلي هذا الكود:\n')">🔧 صلح Bug</button>
     <button class="template-btn" onclick="useTemplate('اشرحلي بالتفصيل ')">💡 شرح</button>
   </div>
   <div class="input-wrapper">
@@ -1377,7 +1403,7 @@ function renderChat() {
       <div class="welcome-cards">
         <div class="welcome-card" onclick="useTemplate('ارسم صورة: ')"><div class="card-icon">🎨</div><div class="card-title">رسم صورة</div><div class="card-desc">توليد صور فائقة الجودة</div></div>
         <div class="welcome-card" onclick="useTemplate('اشرحلي ')"><div class="card-icon">💡</div><div class="card-title">شرح وتحليل</div><div class="card-desc">أشرح أي موضوع تريده</div></div>
-        <div class="welcome-card" onclick="useTemplate('اكتبلي كود ')"><div class="card-icon">💻</div><div class="card-title">برمجة</div><div class="card-desc">أكتب ويصلح الكود</div></div>
+        <div class="welcome-card" onclick="setMode('coder');useTemplate('اصنعلي مشروع ')"><div class="card-icon">💻</div><div class="card-title">مشروع كامل</div><div class="card-desc">موقع، API، بوت — جاهز للتشغيل</div></div>
         <div class="welcome-card" onclick="document.getElementById('fileInput').click()"><div class="card-icon">📄</div><div class="card-title">تحليل ملف</div><div class="card-desc">PDF أو صورة</div></div>
       </div>
     </div>`;
@@ -1398,14 +1424,43 @@ function renderChat() {
         <div class="user-msg">${userContent}</div>
       </div>
       <div class="message">
-        <div class="ai-msg">${aiContent}${imgHtml}</div>
+        <div class="ai-msg" id="msg-${i}">${aiContent}${imgHtml}</div>
         ${isTyping ? '' : `<div class="msg-actions">
-          <button class="msg-btn" onclick="copyText(${JSON.stringify(m.rawAi || m.ai)})"><i class="fa-solid fa-copy"></i> نسخ</button>
+          <button class="msg-btn" onclick="copyText(${JSON.stringify(m.rawAi || m.ai)})"><i class="fa-solid fa-copy"></i> نسخ الكل</button>
           <button class="msg-btn" onclick="regenerate(${i})"><i class="fa-solid fa-rotate"></i> إعادة</button>
         </div>`}
       </div>`;
   });
-  requestAnimationFrame(() => window.scrollTo(0, document.body.scrollHeight));
+  // Add code block headers with copy buttons
+  requestAnimationFrame(() => {
+    document.querySelectorAll('.ai-msg pre').forEach(pre => {
+      if (pre.querySelector('.code-header')) return; // already processed
+      const code = pre.querySelector('code');
+      const lang = (pre.dataset.lang || code?.className?.replace('lang-','') || 'code').toLowerCase();
+      const header = document.createElement('div');
+      header.className = 'code-header';
+      header.innerHTML = `<span class="code-lang-badge">${lang}</span>
+        <button class="copy-code-btn" onclick="copyCodeBlock(this)">
+          <i class="fa-regular fa-copy"></i> نسخ
+        </button>`;
+      pre.insertBefore(header, pre.firstChild);
+    });
+    window.scrollTo(0, document.body.scrollHeight);
+  });
+}
+
+function copyCodeBlock(btn) {
+  const pre = btn.closest('pre');
+  const code = pre.querySelector('code');
+  const text = code ? code.innerText : '';
+  navigator.clipboard.writeText(text).then(() => {
+    btn.classList.add('copied');
+    btn.innerHTML = '<i class="fa-solid fa-check"></i> تم!';
+    setTimeout(() => {
+      btn.classList.remove('copied');
+      btn.innerHTML = '<i class="fa-regular fa-copy"></i> نسخ';
+    }, 2000);
+  }).catch(() => showToast('⚠️ تعذر النسخ', 'error'));
 }
 
 function escHtml(t) {
@@ -1616,19 +1671,87 @@ MODE_PROMPTS = {
 - استخدم الصور الذهنية والإيقاع في الكتابة.
 - كل رد يكون تجربة لا مجرد معلومة.""",
 
-    'coder': """أنت Wadi المبرمج — خبير تقني متقدم يحب البرمجة ويعشق الكود النظيف. صنعه Anas Wadi 💻
+    'coder': """أنت Wadi المبرمج — Senior Software Engineer متخصص ومحترف. صنعه Anas Wadi 💻
 
-شخصيتك:
-- دقيق، منظم، وعملي — لكن مع روح تجعل البرمجة ممتعة.
-- تشرح الكود كأنك تعلم صديق، مش تقرأ documentation.
-- تلاحظ الأخطاء الشائعة قبل ما يقع فيها الشخص.
+## هويتك كمهندس:
+أنت مهندس برمجيات أول (Senior Engineer) بخبرة عميقة في بناء أنظمة إنتاجية حقيقية. تفكر كمعمارية أنظمة (System Architect) وتكتب كود يستحق أن يكون في Production.
 
-قواعد الرد:
-- اكتب الكود دائماً داخل ```language مع التعليقات الضرورية.
-- اشرح كل جزء مهم بلغة بشرية بسيطة.
-- نبه على الأخطاء الشائعة والـ edge cases.
-- قدم بدائل أفضل إذا وجدت — الكود الأفضل دائماً موجود.
-- اذكر best practices في اللحظة المناسبة.""",
+## خبرتك التقنية الكاملة:
+**Backend:** Python (Flask, Django, FastAPI), Node.js (Express), REST APIs, GraphQL, WebSockets
+**Frontend:** React, TypeScript, Next.js, Vue.js, HTML5/CSS3/JS, Tailwind CSS, SCSS
+**Databases:** PostgreSQL, MySQL, SQLite, MongoDB, Redis — قواعد بيانات محسّنة وindexed بشكل صحيح
+**DevOps & Cloud:** Docker, CI/CD, Nginx, Gunicorn, Render, Railway, Vercel, GitHub Actions
+**AI/ML:** APIs (OpenAI, Groq, Anthropic, Gemini), LangChain, Prompt Engineering متقدم
+**Security:** Authentication (JWT, OAuth2, Session), Hashing, Rate Limiting, Input Validation, CSRF
+**Tools:** Git, Linux/Bash, Testing (pytest, Jest), API Documentation
+
+## قواعد الكود الذهبية — لا تنتهكها أبداً:
+1. **اكتب الكود كاملاً دائماً** — لا تكتب "// بقية الكود هنا" أو "..." أو تقطع الكود في المنتصف
+2. **ملفات كاملة** — إذا طُلب منك ملف، أرسل الملف من أول سطر لآخر سطر
+3. **Comments بالعربية أو الإنجليزية** — شرح كل block مهم
+4. **Error Handling في كل مكان** — try/catch، استثناءات واضحة، رسائل خطأ مفيدة
+5. **Type hints في Python** — أضف annotation للـ functions والـ variables المهمة
+6. **لا Magic Numbers** — استخدم constants مسماة واضحة
+7. **DRY Principle** — لا تكرر الكود، استخدم functions وclasses
+
+## طريقة عملك عند طلب مشروع كامل:
+عندما يطلب المستخدم مشروعاً (موقع، API، بوت، تطبيق)، قدّم:
+
+### 1. هيكل المشروع أولاً:
+```
+project-name/
+├── app.py / main.py / index.js
+├── requirements.txt / package.json
+├── config.py
+├── models/ أو routes/ أو components/
+├── templates/ أو static/
+├── tests/
+└── README.md
+```
+
+### 2. ثم كل ملف كامل بالترتيب:
+- الملف الرئيسي أولاً
+- الـ Config والـ Environment
+- الـ Models/Database
+- الـ Routes/Controllers
+- الـ Templates/Frontend
+- الـ Tests
+- الـ README مع تعليمات التشغيل
+
+### 3. في نهاية كل مشروع أضف:
+- كيفية تشغيل المشروع محلياً
+- متغيرات البيئة المطلوبة
+- كيفية الـ Deploy
+
+## عند تحليل الأكواد الموجودة:
+- **اقرأ كل السياق** قبل أي تعديل
+- **حدد المشكلة بدقة** — السطر والسبب والحل
+- **لا تكسر ما يعمل** — فقط صلح المشكلة
+- **اقترح Refactoring** إذا رأيت تحسينات واضحة
+- **نبّه على Security Issues** فوراً إذا وجدت
+
+## أسلوب تقديم الكود:
+- دائماً ```python أو ```javascript أو ```html مع تحديد اللغة
+- أضف تعليقاً في أول الملف يشرح الغرض منه
+- استخدم separators واضحة بين الأقسام: # ─── اسم القسم ──────
+- اكتب docstrings للـ functions المهمة
+
+## عند وجود خطأ أو Bug:
+1. اشرح **لماذا** حدث الخطأ
+2. أعط الحل المباشر مع الكود الكامل
+3. اشرح **كيف تتجنبه** مستقبلاً
+4. قدم test case يثبت أن الحل يعمل
+
+## Production-Level Best Practices التي تطبقها دائماً:
+- Environment variables للـ secrets (لا hardcoded passwords أبداً)
+- Database connection pooling وإغلاق الاتصالات
+- Logging مناسب (ليس فقط print)
+- Input validation وsanitization
+- Rate limiting للـ APIs
+- HTTPS وsecurity headers
+- Graceful error responses (لا stack traces للمستخدم)
+
+تذكر: أنت لا تكتب "أمثلة توضيحية" — أنت تكتب كوداً جاهزاً للتشغيل الفعلي.""",
 
     'writer': """أنت Wadi الكاتب — محرر لغوي وأديب متمكن. صنعه Anas Wadi ✍️
 
@@ -1650,6 +1773,7 @@ def get_system_prompt(mode, user_message):
         return "أجب بالضبط: أنا Wadi، مساعد ذكاء اصطناعي طوّره المهندس Anas Wadi من ليبيا 🇱🇾. لا تضف أي معلومة أخرى."
     return MODE_PROMPTS.get(mode, MODE_PROMPTS['fast'])
 
+
 # ─── Image Generation ─────────────────────────────────────────
 def generate_image(prompt):
     clean_prompt = prompt.strip()
@@ -1665,34 +1789,65 @@ def generate_image(prompt):
     )
     return primary_url, fallback_url
 
-# ─── Response Formatter ───────────────────────────────────────
+# ─── Response Formatter (Enhanced) ───────────────────────────
 def format_response(text):
+    import html as html_module
+
+    # Code blocks — preserve content, add language class and copy button support
+    def replace_code_block(m):
+        lang = m.group(1) or 'code'
+        code_content = m.group(2).strip()
+        # Escape HTML inside code blocks
+        escaped = html_module.escape(code_content)
+        return f'<pre data-lang="{lang}"><code class="lang-{lang}">{escaped}</code></pre>'
+
+    text = re.sub(
+        r'```(\w+)?\n(.*?)```',
+        replace_code_block,
+        text, flags=re.DOTALL
+    )
+
+    # Inline code
+    text = re.sub(r'`([^`\n]+?)`', r'<code>\1</code>', text)
+
+    # Headings
     text = re.sub(r'^### (.+)$', r'<h4>\1</h4>', text, flags=re.MULTILINE)
     text = re.sub(r'^## (.+)$', r'<h3>\1</h3>', text, flags=re.MULTILINE)
     text = re.sub(r'^# (.+)$', r'<h2>\1</h2>', text, flags=re.MULTILINE)
+
+    # Bold/Italic
     text = re.sub(r'\*\*\*(.+?)\*\*\*', r'<strong><em>\1</em></strong>', text)
     text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
     text = re.sub(r'\*(.+?)\*', r'<em>\1</em>', text)
-    text = re.sub(
-        r'```(\w+)?\n(.*?)```',
-        lambda m: f'<pre><code class="lang-{m.group(1) or ""}">{m.group(2).strip()}</code></pre>',
-        text, flags=re.DOTALL
-    )
-    text = re.sub(r'`(.+?)`', r'<code>\1</code>', text)
+
+    # Horizontal rule
+    text = re.sub(r'^---+$', r'<hr>', text, flags=re.MULTILINE)
+
+    # Unordered lists
     def convert_list(m):
         items = re.findall(r'^[-*•] (.+)$', m.group(0), re.MULTILINE)
         return '<ul>' + ''.join(f'<li>{i}</li>' for i in items) + '</ul>'
     text = re.sub(r'(^[-*•] .+$\n?)+', convert_list, text, flags=re.MULTILINE)
+
+    # Ordered lists
     def convert_ol(m):
         items = re.findall(r'^\d+\. (.+)$', m.group(0), re.MULTILINE)
         return '<ol>' + ''.join(f'<li>{i}</li>' for i in items) + '</ol>'
     text = re.sub(r'(^\d+\. .+$\n?)+', convert_ol, text, flags=re.MULTILINE)
+
+    # Paragraphs
     text = re.sub(r'\n{2,}', '</p><p>', text)
     text = f'<p>{text}</p>'
-    text = text.replace('<p></p>', '').replace('<p><h', '<h').replace('</h2></p>', '</h2>')
-    text = text.replace('</h3></p>', '</h3>').replace('</h4></p>', '</h4>')
-    allowed_tags = ['h2','h3','h4','p','strong','em','ul','ol','li','code','pre','br']
-    return bleach.clean(text, tags=allowed_tags, strip=True)
+    text = text.replace('<p></p>', '').replace('<p><h', '<h')
+    text = text.replace('</h2></p>', '</h2>').replace('</h3></p>', '</h3>').replace('</h4></p>', '</h4>')
+    text = text.replace('<p><pre', '<pre').replace('</pre></p>', '</pre>')
+    text = text.replace('<p><ul>', '<ul>').replace('</ul></p>', '</ul>')
+    text = text.replace('<p><ol>', '<ol>').replace('</ol></p>', '</ol>')
+    text = text.replace('<p><hr>', '<hr>').replace('<hr></p>', '<hr>')
+
+    allowed_tags = ['h2','h3','h4','p','strong','em','ul','ol','li','code','pre','br','hr']
+    return bleach.clean(text, tags=allowed_tags, attributes={'pre': ['data-lang'], 'code': ['class']}, strip=True)
+
 
 # ─── Routes: Auth ─────────────────────────────────────────────
 @app.route('/login', methods=['GET', 'POST'])
@@ -1810,13 +1965,25 @@ def chat():
     if mode not in MODE_PROMPTS:
         mode = 'fast'
 
+    # Coder mode gets more context history for large projects
+    history_limit = 20 if mode == 'coder' else 12
+    # Coder mode gets higher token limit for full file output
+    max_tokens_map = {
+        'coder':    4096,
+        'thinker':  3000,
+        'writer':   2500,
+        'creative': 2000,
+        'funny':    1500,
+        'fast':     2048,
+    }
+
     messages = [{"role": "system", "content": get_system_prompt(mode, user_message)}]
 
     try:
         history_data = json.loads(history_raw)
-        for msg in history_data[-12:]:
-            u = str(msg.get("user", ""))[:1000]
-            a = str(msg.get("rawAi") or msg.get("ai", ""))[:2000]
+        for msg in history_data[-history_limit:]:
+            u = str(msg.get("user", ""))[:2000]
+            a = str(msg.get("rawAi") or msg.get("ai", ""))[:4000]
             if u and a and a != '__typing__':
                 messages.append({"role": "user", "content": u})
                 messages.append({"role": "assistant", "content": a})
@@ -1873,24 +2040,24 @@ def chat():
                 return jsonify({"response": f"⚠️ خطأ: {str(e)}", "rawResponse": ""})
 
     model_map = {
-        'thinker':  'llama-3.3-70b-versatile',
-        'coder':    'llama-3.3-70b-versatile',
+        'thinker':  'deepseek-r1-distill-llama-70b',
+        'coder':    'deepseek-r1-distill-llama-70b',
         'writer':   'llama-3.3-70b-versatile',
         'creative': 'llama-3.3-70b-versatile',
         'fast':     'llama-3.1-8b-instant',
         'funny':    'llama-3.1-8b-instant',
     }
-    # Temperature: higher for creative/emotional modes
     temp_map = {
         'funny':    0.92,
         'creative': 0.88,
         'writer':   0.82,
         'thinker':  0.45,
-        'coder':    0.35,
+        'coder':    0.25,
         'fast':     0.72,
     }
     model = model_map.get(mode, 'llama-3.1-8b-instant')
     temperature = temp_map.get(mode, 0.72)
+    max_tokens = max_tokens_map.get(mode, 2048)
     messages.append({"role": "user", "content": user_message or "مرحبا"})
 
     try:
@@ -1898,10 +2065,10 @@ def chat():
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
             json={
-                "model": model, "messages": messages, "max_tokens": 2048,
+                "model": model, "messages": messages, "max_tokens": max_tokens,
                 "temperature": temperature, "top_p": 0.92, "stream": False
             },
-            timeout=60
+            timeout=90
         )
         result = resp.json()
         if resp.ok:
@@ -1928,11 +2095,11 @@ def extract_pdf_text(pdf_file):
     try:
         reader = PyPDF2.PdfReader(io.BytesIO(pdf_file.read()))
         text = ""
-        for page in reader.pages[:15]:
+        for page in reader.pages[:20]:
             t = page.extract_text()
             if t:
                 text += t + "\n"
-        return text[:10000]
+        return text[:15000]
     except Exception as e:
         return f"خطأ في قراءة PDF: {str(e)}"
 
