@@ -2040,8 +2040,8 @@ def chat():
                 return jsonify({"response": f"⚠️ خطأ: {str(e)}", "rawResponse": ""})
 
     model_map = {
-        'thinker':  'deepseek-r1-distill-llama-70b',
-        'coder':    'deepseek-r1-distill-llama-70b',
+        'thinker':  'qwen/qwen3-32b',
+        'coder':    'qwen/qwen3-32b',
         'writer':   'llama-3.3-70b-versatile',
         'creative': 'llama-3.3-70b-versatile',
         'fast':     'llama-3.1-8b-instant',
@@ -2058,6 +2058,12 @@ def chat():
     model = model_map.get(mode, 'llama-3.1-8b-instant')
     temperature = temp_map.get(mode, 0.72)
     max_tokens = max_tokens_map.get(mode, 2048)
+
+    # Qwen3 supports reasoning_effort — enable for coder/thinker
+    extra_params = {}
+    if mode in ('coder', 'thinker') and model == 'qwen/qwen3-32b':
+        extra_params['reasoning_effort'] = 'default'
+
     messages.append({"role": "user", "content": user_message or "مرحبا"})
 
     try:
@@ -2066,7 +2072,8 @@ def chat():
             headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
             json={
                 "model": model, "messages": messages, "max_tokens": max_tokens,
-                "temperature": temperature, "top_p": 0.92, "stream": False
+                "temperature": temperature, "top_p": 0.92, "stream": False,
+                **extra_params
             },
             timeout=90
         )
