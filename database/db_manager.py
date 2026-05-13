@@ -1,6 +1,6 @@
 import os
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import psycopg
+from psycopg.rows import dict_row
 from contextlib import contextmanager
 import logging
 
@@ -8,12 +8,12 @@ logger = logging.getLogger(__name__)
 
 @contextmanager
 def get_db():
-    """يرجع connection بقاعدة البيانات - بدون Pool عشان Render Free"""
+    """يرجع connection بقاعدة البيانات - psycopg3"""
     conn = None
     try:
-        conn = psycopg2.connect(
+        conn = psycopg.connect(
             os.environ.get('DATABASE_URL'),
-            cursor_factory=RealDictCursor
+            row_factory=dict_row
         )
         yield conn
         conn.commit()
