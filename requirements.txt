@@ -1,11 +1,8 @@
 Flask==3.0.3
+flask-session==0.8.0
 gunicorn==23.0.0
 psycopg[binary]==3.2.10
-groq==0.11.0
-python-dotenv==1.0.1
-Flask-Cors==4.0.1
 PyPDF2==3.0.1
-Pillow==10.4.0
 bleach==6.1.0
-Werkzeug==3.0.3
 requests==2.32.3
+Werkzeug==3.0.3
