@@ -1,23 +1,40 @@
 import os
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from contextlib import contextmanager
 import logging
-import psycopg
-from psycopg_pool import ConnectionPool
 
 logger = logging.getLogger(__name__)
-db_pool = None
+
+@contextmanager
+def get_db():
+    """يرجع connection بقاعدة البيانات - بدون Pool عشان Render Free"""
+    conn = None
+    try:
+        conn = psycopg2.connect(
+            os.environ.get('DATABASE_URL'),
+            cursor_factory=RealDictCursor
+        )
+        yield conn
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Database error: {e}")
+        if conn:
+            conn.rollback()
+        raise
+    finally:
+        if conn:
+            conn.close()
 
 def init_db():
     """ينشئ جدول المستخدمين + المحادثات + المشاركة"""
-    global db_pool
     db_url = os.environ.get("DATABASE_URL")
     if not db_url:
         logger.error("DATABASE_URL not set")
         return
 
     try:
-        db_pool = ConnectionPool(db_url, min_size=1, max_size=10, timeout=30)
-        
-        with db_pool.connection() as conn:
+        with get_db() as conn:
             with conn.cursor() as cur:
                 # جدول المستخدمين
                 cur.execute("""
@@ -57,13 +74,7 @@ def init_db():
                     );
                     CREATE INDEX IF NOT EXISTS idx_share_token ON shared_chats(share_token);
                 """)
-                conn.commit()
-        logger.info("✅ Database initialized with pool")
+        logger.info("✅ Database initialized")
     except Exception as e:
         logger.error(f"DB init error: {e}")
-
-def get_db():
-    """يرجع connection من الـ Pool"""
-    if not db_pool:
-        raise Exception("Database not initialized")
-    return db_pool.connection()
+        raise
