@@ -1,71 +1,56 @@
 import os
 import requests
 import logging
-import json
-from ai.prompts import get_system_prompt
 
 logger = logging.getLogger(__name__)
 
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+class AIService:
+    def __init__(self):
+        self.api_key = os.environ.get('GROQ_API_KEY')
+        self.api_url = "https://api.groq.com/openai/v1/chat/completions"
 
-def stream_ai_response(user_message, mode="fast", conversation_history=None):
-    """
-    يرسل للـ Groq ويرجع الرد كـ Generator عشان Streaming
-    """
-    if not GROQ_API_KEY:
-        logger.error("GROQ_API_KEY not set")
-        yield "خطأ: مفتاح الـ AI مش مضبوط في السيرفر"
-        return
+        if not self.api_key:
+            logger.warning("GROQ_API_KEY not found in environment")
 
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
+    def get_response(self, message, user_email=None):
+        try:
+            if not self.api_key:
+                return "عذراً، مفتاح الـ AI مش مضبوط. كلّم الأدمن"
 
-    # نبني الرسائل: system + التاريخ + الرسالة الجديدة
-    messages = [{"role": "system", "content": get_system_prompt(mode)}]
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
 
-    if conversation_history:
-        messages.extend(conversation_history[-6:]) # آخر 6 رسايل بس عشان التوكن
+            data = {
+                "model": "llama-3.1-8b-instant",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "أنت anas wadi، مساعد ذكي ودود تتكلم باللهجة الليبية. اسمك anas wadi. جاوب باختصار وبأسلوب حلو ومرح. استخدم كلمات ليبية زي: هلبا، باهي، شن جو، تي، كيف صار."
+                    },
+                    {
+                        "role": "user",
+                        "content": message
+                    }
+                ],
+                "temperature": 0.8,
+                "max_tokens": 1000
+            }
 
-    messages.append({"role": "user", "content": user_message})
+            response = requests.post(self.api_url, headers=headers, json=data, timeout=30)
+            response.raise_for_status()
 
-    payload = {
-        "model": "llama-3.1-70b-versatile", # موديل Groq القوي
-        "messages": messages,
-        "stream": True,
-        "temperature": 0.7,
-        "max_tokens": 2048
-    }
+            result = response.json()
+            ai_response = result['choices'][0]['message']['content']
+            return ai_response
 
-    try:
-        response = requests.post(GROQ_API_URL, headers=headers, json=payload, stream=True, timeout=60)
-
-        if response.status_code!= 200:
-            logger.error(f"Groq API error: {response.status_code} - {response.text}")
-            yield f"خطأ من سيرفر الذكاء الاصطناعي: {response.status_code}"
-            return
-
-        # نقرأ الـ stream سطر سطر
-        for line in response.iter_lines():
-            if line:
-                decoded_line = line.decode('utf-8')
-                if decoded_line.startswith('data: '):
-                    json_str = decoded_line[6:] # شيل 'data: '
-                    if json_str.strip() == '[DONE]':
-                        break
-                    try:
-                        chunk = json.loads(json_str)
-                        delta = chunk['choices'][0]['delta'].get('content', '')
-                        if delta:
-                            yield delta
-                    except json.JSONDecodeError:
-                        continue
-
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Groq request failed: {e}")
-        yield "عذراً، السيرفر مشغول حالياً. جرب بعد شوية"
-    except Exception as e:
-        logger.error(f"AI Service error: {e}")
-        yield "صار خطأ غير متوقع"
+        except requests.exceptions.Timeout:
+            logger.error("Groq API timeout")
+            return "عذراً، خذيت وقت طويل. جرب تاني"
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Groq API error: {e}")
+            return "عذراً، صار خطأ في الاتصال بالـ AI"
+        except Exception as e:
+            logger.error(f"AI Service error: {e}")
+            return "عذراً، صار خطأ غير متوقع"
