@@ -792,8 +792,8 @@ def add_security_headers(response):
     response.headers['Content-Security-Policy'] = (
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-        "font-src 'self' https://fonts.gstatic.com; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; "
+        "font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com data:; "
         "img-src 'self' data: https://image.pollinations.ai blob:; "
         "connect-src 'self' https://api.groq.com;"
     )
@@ -1016,6 +1016,7 @@ HTML = '''
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#050510">
+<link rel="manifest" href="/manifest.json">
 <title>✨ Anas Wadi ✨</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700;900&family=Cairo:wght@300;400;600;700&display=swap" rel="stylesheet">
@@ -1603,12 +1604,20 @@ textarea::placeholder { color:var(--text-muted); }
     <button class="sidebar-footer-btn" onclick="toggleTheme()">
       <i class="fa-solid fa-moon" id="sidebarThemeIcon"></i> الوضع
     </button>
+    <button class="sidebar-footer-btn" onclick="shareCurrentChat()">
+      <i class="fa-solid fa-share-nodes" style="color:var(--accent1)"></i> شارك
+    </button>
     <button class="sidebar-footer-btn" onclick="showSupport()">
       <i class="fa-solid fa-heart" style="color:#ff6b6b"></i> دعم
     </button>
     <a href="/logout" class="sidebar-footer-btn" style="text-decoration:none;color:inherit">
       <i class="fa-solid fa-right-from-bracket"></i> خروج
     </a>
+  </div>
+  <div style="padding:0 14px 14px">
+    <button class="sidebar-footer-btn" onclick="showDeleteAccount()" style="width:100%;color:#ff6b6b;border-color:rgba(255,80,80,0.3)">
+      <i class="fa-solid fa-trash"></i> حذف الحساب
+    </button>
   </div>
 </div>
 
@@ -2058,8 +2067,8 @@ async function sendMessage() {
     if (d.error) { showToast(d.error, 'error'); c.pop(); }
     else {
       c[c.length-1].ai = d.response;
-      c[c.length-1].rawAi = d.rawResponse || d.response;
-      if (d.imageUrl) c[c.length-1].imageUrl = d.imageUrl;
+      c[c.length-1].rawAi = d.raw || d.response;
+      if (d.image_url) c[c.length-1].imageUrl = d.image_url;
       await loadDbChats();
     }
   } catch (err) {
@@ -2089,8 +2098,8 @@ async function regenerate(i) {
   try {
     const r = await fetch('/api/chat', { method: 'POST', body: fd });
     const d = await r.json();
-    c[i].ai = d.response; c[i].rawAi = d.rawResponse || d.response;
-    if (d.imageUrl) c[i].imageUrl = d.imageUrl; else delete c[i].imageUrl;
+    c[i].ai = d.response; c[i].rawAi = d.raw || d.response;
+    if (d.image_url) c[i].imageUrl = d.image_url; else delete c[i].imageUrl;
   } catch (err) {
     c[i].ai = '⚠️ صار خطأ: ' + err.message;
   } finally {
@@ -2160,9 +2169,206 @@ function autoResize(el) {
 function showSupport() { document.getElementById('supportModal').classList.add('open'); }
 function closeModalClick(e) { if (e.target.classList.contains('modal')) e.target.classList.remove('open'); }
 
+// ─── 1. Streaming Send ────────────────────────────────────────
+async function sendMessageStream() {
+  if (isSending) return;
+  const inp = document.getElementById('messageInput');
+  const t = inp.value.trim();
+  if (!t && !currentFile) return;
+  // الملفات وطلبات الصور تستخدم endpoint القديم
+  if (currentFile) return sendMessage();
+  if (t.includes('ارسم') || t.includes('صورة') || t.startsWith('draw')) return sendMessage();
+  if (!navigator.onLine) { showToast('📡 لا يوجد اتصال', 'error'); return; }
+  isSending = true;
+  document.getElementById('sendBtn').disabled = true;
+  inp.value = ''; inp.style.height = '52px';
+  if (!chats[currentChatId]) chats[currentChatId] = [];
+  const c = chats[currentChatId];
+  c.push({ user: t, ai: '__typing__' });
+  saveChats(); renderChat();
+  const fd = new FormData();
+  fd.append('message', t);
+  fd.append('mode', currentMode);
+  fd.append('chat_id', currentChatId);
+  fd.append('history', JSON.stringify(c.slice(0, -1)));
+  let accumulated = '';
+  try {
+    const r = await fetch('/api/chat/stream', { method: 'POST', body: fd });
+    if (!r.ok || !r.body) throw new Error('no-stream');
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '', started = false;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const data = JSON.parse(line.slice(6));
+          if (data.error) throw new Error(data.error);
+          if (data.delta) {
+            if (!started) { c[c.length-1].ai = ''; started = true; }
+            accumulated += data.delta;
+            c[c.length-1].ai = escHtml(accumulated).replace(/\n/g,'<br>');
+            const last = document.querySelector('.ai-msg:last-of-type');
+            if (last) last.innerHTML = c[c.length-1].ai;
+          }
+          if (data.done) {
+            c[c.length-1].ai = data.formatted;
+            c[c.length-1].rawAi = data.raw;
+            saveChats(); renderChat();
+            await loadDbChats();
+          }
+        } catch(e) { throw e; }
+      }
+    }
+  } catch (err) {
+    if (accumulated.length === 0) { c.pop(); saveChats(); return sendMessage(); }
+    showToast('⚠️ انقطع البث', 'error');
+  } finally {
+    isSending = false;
+    document.getElementById('sendBtn').disabled = false;
+  }
+}
+
+// ─── 2. Onboarding ────────────────────────────────────────────
+function checkOnboarding() {
+  if (!localStorage.getItem('onboarded')) {
+    setTimeout(() => {
+      const m = document.getElementById('onboardModal');
+      if (m) m.classList.add('open');
+    }, 400);
+  }
+}
+function finishOnboarding() {
+  localStorage.setItem('onboarded', '1');
+  const m = document.getElementById('onboardModal');
+  if (m) m.classList.remove('open');
+}
+
+// ─── 3. Share Chat ────────────────────────────────────────────
+async function shareCurrentChat() {
+  if (!currentChatId) return;
+  try {
+    const r = await fetch(`/api/chat/${currentChatId}/share`, { method: 'POST' });
+    const d = await r.json();
+    if (d.ok && d.url) {
+      const inp = document.getElementById('shareUrlInput');
+      if (inp) inp.value = d.url;
+      const m = document.getElementById('shareModal');
+      if (m) m.classList.add('open');
+    } else { showToast(d.error || 'تعذر إنشاء الرابط', 'error'); }
+  } catch(e) { showToast('خطأ في الاتصال', 'error'); }
+}
+function copyShareUrl() {
+  const inp = document.getElementById('shareUrlInput');
+  if (!inp) return;
+  navigator.clipboard.writeText(inp.value).then(() => showToast('✅ تم نسخ الرابط', 'success'));
+}
+
+// ─── 4. Connection Banner ─────────────────────────────────────
+function setupConnection() {
+  const banner = document.getElementById('connBanner');
+  if (!banner) return;
+  const update = () => navigator.onLine ? banner.classList.remove('show') : banner.classList.add('show');
+  window.addEventListener('online', update);
+  window.addEventListener('offline', update);
+  update();
+}
+
+// ─── 5. Service Worker (PWA) ──────────────────────────────────
+function registerSW() {
+  if (!('serviceWorker' in navigator)) return;
+  try { if (window.self !== window.top) return; } catch(e) { return; }
+  navigator.serviceWorker.register('/sw.js').catch(e => console.warn('SW:', e));
+}
+
+// ─── 6. Delete Account ────────────────────────────────────────
+function showDeleteAccount() {
+  closeSidebar();
+  const m = document.getElementById('deleteAccountModal');
+  if (m) { m.classList.add('open'); document.getElementById('deleteConfirm').value = ''; }
+}
+async function confirmDeleteAccount() {
+  const val = document.getElementById('deleteConfirm').value.trim();
+  if (val !== 'DELETE') { showToast('اكتب DELETE للتأكيد', 'error'); return; }
+  try {
+    const fd = new FormData();
+    fd.append('confirmation', 'DELETE');
+    const r = await fetch('/api/account/delete', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (d.ok) { localStorage.clear(); showToast('✅ تم حذف الحساب', 'success'); setTimeout(() => location.href='/login', 1200); }
+    else showToast(d.error || 'تعذر الحذف', 'error');
+  } catch(e) { showToast('خطأ في الاتصال', 'error'); }
+}
+
+// تفعيل Streaming كـ sendMessage الافتراضية
+const _origSend = sendMessage;
+window.sendMessage = function() { return sendMessageStream(); };
+
 // ─── Boot ─────────────────────────────────────────────────────
 init();
+window.addEventListener('load', () => { setupConnection(); registerSW(); checkOnboarding(); });
 </script>
+
+<!-- Connection Banner -->
+<div id="connBanner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:999;background:rgba(220,50,50,0.92);color:#fff;text-align:center;padding:9px;font-size:13px;font-weight:700;backdrop-filter:blur(8px)">
+  📡 لا يوجد اتصال بالإنترنت
+</div>
+<style>#connBanner{display:none}#connBanner.show{display:block}</style>
+
+<!-- Onboarding Modal -->
+<div class="modal" id="onboardModal" onclick="closeModalClick(event)">
+  <div class="modal-content" style="max-width:400px">
+    <div style="font-size:44px;margin-bottom:14px">🌊</div>
+    <h2 style="margin-bottom:12px;font-size:22px">مرحباً في Anas Wadi!</h2>
+    <p style="color:var(--text-dim);line-height:1.9;font-size:14px;margin-bottom:20px">
+      مساعد ذكاء اصطناعي متكامل — يرسم، يبرمج، يترجم، ويحلل ملفاتك 🚀<br>
+      طوّره المهندس <strong>Anas Wadi</strong> من ليبيا 🇱🇾
+    </p>
+    <button onclick="finishOnboarding()"
+      style="width:100%;border-radius:14px;padding:13px;background:linear-gradient(135deg,#00ff94,#00d2ff);color:#000;font-weight:800;font-size:15px;border:none;cursor:pointer;font-family:'Tajawal',sans-serif">
+      ابدأ الآن ✨
+    </button>
+  </div>
+</div>
+
+<!-- Share Modal -->
+<div class="modal" id="shareModal" onclick="closeModalClick(event)">
+  <div class="modal-content">
+    <div style="font-size:36px;margin-bottom:12px">🔗</div>
+    <h2 style="margin-bottom:10px">شارك المحادثة</h2>
+    <p style="color:var(--text-dim);font-size:13px;margin-bottom:16px">رابط للقراءة فقط — بدون تسجيل دخول</p>
+    <div style="display:flex;gap:8px;align-items:center">
+      <input id="shareUrlInput" type="text" readonly
+        style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:10px 14px;font-size:12px;direction:ltr;font-family:monospace">
+      <button onclick="copyShareUrl()"
+        style="background:linear-gradient(135deg,#00ff94,#00d2ff);border:none;border-radius:10px;padding:10px 16px;color:#000;font-weight:800;cursor:pointer;font-family:'Tajawal',sans-serif;white-space:nowrap">
+        نسخ
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Delete Account Modal -->
+<div class="modal" id="deleteAccountModal" onclick="closeModalClick(event)">
+  <div class="confirm-modal-content">
+    <div style="font-size:36px;margin-bottom:12px">⚠️</div>
+    <h3>حذف الحساب نهائياً</h3>
+    <p>سيتم حذف حسابك وجميع محادثاتك بشكل لا يمكن التراجع عنه.</p>
+    <p style="margin-bottom:14px">اكتب <strong style="color:#ff6b6b">DELETE</strong> للتأكيد:</p>
+    <input id="deleteConfirm" type="text" placeholder="DELETE"
+      style="width:100%;background:var(--surface2);border:1px solid rgba(255,80,80,0.4);color:var(--text);border-radius:10px;padding:10px 14px;font-size:14px;margin-bottom:16px;text-align:center;letter-spacing:3px;font-family:'Tajawal',sans-serif">
+    <div class="confirm-btns">
+      <button class="confirm-btn-del" onclick="confirmDeleteAccount()">حذف الحساب</button>
+      <button class="confirm-btn-cancel" onclick="document.getElementById('deleteAccountModal').classList.remove('open')">إلغاء</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>
 '''
@@ -2426,7 +2632,7 @@ def chat_stream():
                                 content = chunk['choices'][0]['delta'].get('content', '')
                                 if content:
                                     full_response += content
-                                    yield f"data: {json.dumps({'content': content})}\n\n"
+                                    yield f"data: {json.dumps({'delta': content})}\n\n"
                             except Exception:
                                 pass
         except Exception as e:
@@ -2447,7 +2653,7 @@ def chat_stream():
                     # replaces simpleMarkdown output with the full mistune render.
                     # FIX #5: Also send image_url so the client can display it
                     # immediately without waiting for a page reload.
-                    yield f"data: {json.dumps({'formatted': formatted, 'image_url': image_url})}\n\n"
+                    yield f"data: {json.dumps({'done': True, 'formatted': formatted, 'raw': full_response, 'image_url': image_url})}\n\n"
                 except Exception as e:
                     app.logger.error(f"Failed to save message after stream: {str(e)}")
         yield "data: [DONE]\n\n"
