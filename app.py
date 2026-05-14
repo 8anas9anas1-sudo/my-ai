@@ -1016,6 +1016,7 @@ HTML = '''
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#050510">
+<meta name="csrf-token" content="{{ csrf_token }}">
 <link rel="manifest" href="/manifest.json">
 <title>✨ Anas Wadi ✨</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1610,14 +1611,14 @@ textarea::placeholder { color:var(--text-muted); }
     <button class="sidebar-footer-btn" onclick="showSupport()">
       <i class="fa-solid fa-heart" style="color:#ff6b6b"></i> دعم
     </button>
-    <a href="/logout" class="sidebar-footer-btn" style="text-decoration:none;color:inherit">
-      <i class="fa-solid fa-right-from-bracket"></i> خروج
-    </a>
   </div>
   <div style="padding:0 14px 14px">
-    <button class="sidebar-footer-btn" onclick="showDeleteAccount()" style="width:100%;color:#ff6b6b;border-color:rgba(255,80,80,0.3)">
+    <button class="sidebar-footer-btn" onclick="showDeleteAccount()" style="width:100%;color:#ff6b6b;border-color:rgba(255,80,80,0.3);margin-bottom:8px">
       <i class="fa-solid fa-trash"></i> حذف الحساب
     </button>
+    <a href="/logout" class="sidebar-footer-btn" style="text-decoration:none;color:inherit;display:block;text-align:center;width:100%">
+      <i class="fa-solid fa-right-from-bracket"></i> خروج
+    </a>
   </div>
 </div>
 
@@ -2191,6 +2192,9 @@ async function sendMessageStream() {
   fd.append('mode', currentMode);
   fd.append('chat_id', currentChatId);
   fd.append('history', JSON.stringify(c.slice(0, -1)));
+  // FIX: إرسال CSRF token مطلوب لحماية المسار
+  const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+  if (csrfToken) fd.append('csrf_token', csrfToken);
   let accumulated = '';
   try {
     const r = await fetch('/api/chat/stream', { method: 'POST', body: fd });
