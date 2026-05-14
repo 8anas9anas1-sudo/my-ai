@@ -11,3 +11,12 @@ Flask-Limiter==3.8.0
 celery==5.4.0
 mistune==3.0.2
 Werkzeug==3.0.3
+
+# تبعيات إضافية لتجنب أي مشاكل في البيئات المختلفة
+html5lib==1.1
+webencodings==0.5.1
+cffi==1.16.0
+limits==4.1
+vine==5.1.0
+click==8.1.7
+python-dotenv==1.0.0
