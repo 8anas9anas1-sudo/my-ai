@@ -1315,10 +1315,12 @@ body::before {
 .user-msg {
   background:var(--user-grad); color:#000; font-weight:700;
   padding:13px 18px; border-radius:20px 20px 6px 20px;
-  margin-right:auto; max-width:78%;
+  max-width:78%; width:fit-content;
+  margin-right:auto; margin-left:0;
   box-shadow:0 6px 24px rgba(0,255,148,0.22);
   font-size:15px; line-height:1.75; word-break:break-word;
 }
+.message-user { display:flex; justify-content:flex-end; }
 
 .ai-msg {
   background:var(--surface);
@@ -1979,7 +1981,7 @@ function renderChat() {
     let imgHtml = '';
     if (m.imageUrl) imgHtml = `<br><img class="generated-img" src="${escHtml(m.imageUrl)}" alt="صورة مولدة" loading="lazy" onclick="window.open(this.src,'_blank')">`;
     c.innerHTML += `
-      <div class="message">
+      <div class="message message-user">
         <div class="user-msg">${userContent}</div>
       </div>
       <div class="message">
