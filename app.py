@@ -40,8 +40,7 @@ from werkzeug.utils import secure_filename
 class Config:
     # Flask
     SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "change-me-in-production-2026")
-    # Session: filesystem (لا يحتاج Redis — متوافق مع Render المجاني مثل الملف القديم)
-    # لتفعيل Redis: ضع SESSION_TYPE=redis في متغيرات البيئة مع REDIS_URL
+    # Session: Redis
     SESSION_TYPE = os.environ.get("SESSION_TYPE", "filesystem")
     SESSION_FILE_DIR = os.environ.get("SESSION_FILE_DIR", "/tmp/flask_sessions")
     SESSION_REDIS = None  # يُهيَّأ فقط إذا كان SESSION_TYPE=redis
@@ -58,7 +57,7 @@ class Config:
     UPLOAD_FOLDER = os.environ.get("UPLOAD_FOLDER", "static/uploads")
     ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp', 'pdf', 'txt'}
     MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16 MB
-    # Rate Limiting — يستخدم الذاكرة إذا لم يكن Redis متاحاً
+    # Rate Limiting
     RATELIMIT_STORAGE_URL = os.environ.get("RATELIMIT_STORAGE_URL", "memory://")
     # Security
     BCRYPT_ROUNDS = 12
@@ -67,20 +66,13 @@ class Config:
 
 # ─── Lazy Redis initializer (اختياري — يُستخدم فقط إذا SESSION_TYPE=redis) ───
 def init_redis() -> Optional[redis.Redis]:
-    """
-    يُنشئ اتصال Redis فقط إذا كان SESSION_TYPE=redis.
-    على Render المجاني بدون Redis: SESSION_TYPE=filesystem يتجاوز هذه الدالة.
-    """
     if os.environ.get("SESSION_TYPE", "filesystem") != "redis":
         return None
     if Config.SESSION_REDIS is None:
         Config.SESSION_REDIS = redis.from_url(
             os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
-            socket_connect_timeout=5,
-            socket_timeout=5,
-            retry_on_timeout=True,
-            health_check_interval=30,
-            decode_responses=False
+            socket_connect_timeout=5, socket_timeout=5,
+            retry_on_timeout=True, health_check_interval=30, decode_responses=False
         )
     return Config.SESSION_REDIS
 
@@ -88,7 +80,6 @@ def init_redis() -> Optional[redis.Redis]:
 # Application Factory
 # ============================================
 app = Flask(__name__)
-# إنشاء مجلد الجلسات إذا كان النوع filesystem
 if os.environ.get("SESSION_TYPE", "filesystem") == "filesystem":
     os.makedirs(os.environ.get("SESSION_FILE_DIR", "/tmp/flask_sessions"), exist_ok=True)
 else:
@@ -197,14 +188,14 @@ def init_db_tables():
         return
     try:
         with conn.cursor() as cur:
+            # 1. إنشاء الجداول الأساسية إذا لم تكن موجودة
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     id SERIAL PRIMARY KEY,
                     email TEXT UNIQUE NOT NULL,
                     password_hash TEXT NOT NULL,
                     name TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    onboarding_seen BOOLEAN DEFAULT FALSE
+                    created_at TIMESTAMP DEFAULT NOW()
                 );
                 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
             """)
@@ -220,15 +211,28 @@ def init_db_tables():
                     mode TEXT DEFAULT 'fast',
                     image_url TEXT,
                     file_name TEXT,
-                    share_token TEXT UNIQUE,
                     created_at TIMESTAMP DEFAULT NOW()
                 );
                 CREATE INDEX IF NOT EXISTS idx_chat_id ON conversations(chat_id);
                 CREATE INDEX IF NOT EXISTS idx_user_email ON conversations(user_email);
-                CREATE INDEX IF NOT EXISTS idx_share_token ON conversations(share_token);
+            """)
+            # 2. إضافة الأعمدة الجديدة إذا كانت مفقودة (ترقية آمنة)
+            cur.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                                   WHERE table_name='users' AND column_name='onboarding_seen') THEN
+                        ALTER TABLE users ADD COLUMN onboarding_seen BOOLEAN DEFAULT FALSE;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                                   WHERE table_name='conversations' AND column_name='share_token') THEN
+                        ALTER TABLE conversations ADD COLUMN share_token TEXT UNIQUE;
+                        CREATE INDEX IF NOT EXISTS idx_share_token ON conversations(share_token);
+                    END IF;
+                END $$;
             """)
             conn.commit()
-            app.logger.info("Database tables ensured")
+            app.logger.info("Database tables and migrations ensured")
     except Exception as e:
         app.logger.error(f"Database init error: {str(e)}")
     finally:
@@ -240,23 +244,19 @@ with app.app_context():
 # ============================================
 # Security Helpers
 # ============================================
-
 # ─── دعم الترقية من SHA256 القديم إلى bcrypt ───
 OLD_SALT = os.environ.get("PASSWORD_SALT", "anas-wadi-salt-2026")
 
 def _hash_old(password: str) -> str:
-    """تشفير SHA256 القديم — للقراءة فقط عند التحقق"""
     return hashlib.sha256(f"{OLD_SALT}{password}".encode()).hexdigest()
 
 def hash_password(password: str) -> str:
-    """تشفير bcrypt — يُستخدم لجميع الحسابات الجديدة وعند الترقية"""
     return bcrypt.hashpw(
         password.encode('utf-8'),
         bcrypt.gensalt(Config.BCRYPT_ROUNDS)
     ).decode('utf-8')
 
 def check_password(password: str, hashed: str) -> bool:
-    """يدعم bcrypt ($2b$) والتشفير القديم SHA256 معاً"""
     if hashed.startswith('$2b$'):
         return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
     return _hash_old(password) == hashed
@@ -327,15 +327,10 @@ def verify_user(email: str, password: str) -> Optional[Dict[str, Any]]:
             )
             user = cur.fetchone()
             if user and check_password(password, user['password_hash']):
-                # إذا كان التشفير قديماً (SHA256)، نُحدّثه إلى bcrypt تلقائياً
                 if not user['password_hash'].startswith('$2b$'):
-                    new_hash = hash_password(password)
-                    cur.execute(
-                        "UPDATE users SET password_hash = %s WHERE email = %s",
-                        (new_hash, email.lower().strip())
-                    )
+                    cur.execute("UPDATE users SET password_hash = %s WHERE email = %s",
+                                (hash_password(password), email.lower().strip()))
                     conn.commit()
-                    app.logger.info(f"Upgraded password hash to bcrypt for {email.lower().strip()}")
                 return {
                     'email': user['email'],
                     'name': user['name'],
@@ -822,821 +817,1348 @@ AUTH_HTML = '''
 <!DOCTYPE html>
 <html dir="rtl" lang="ar">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ title }}</title>
-    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700&display=swap" rel="stylesheet">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: 'Tajawal', sans-serif;
-            background: #050510;
-            color: #e8eaf6;
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-        }
-        .container {
-            width: 100%;
-            max-width: 420px;
-            background: rgba(255,255,255,0.03);
-            border: 1px solid rgba(255,255,255,0.08);
-            border-radius: 24px;
-            padding: 40px 30px;
-            backdrop-filter: blur(10px);
-            box-shadow: 0 20px 40px rgba(0,0,0,0.5);
-        }
-        h1 {
-            text-align: center;
-            background: linear-gradient(135deg, #00ff94, #00d2ff);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            font-size: 2.2rem;
-            margin-bottom: 10px;
-        }
-        .subtitle {
-            text-align: center;
-            color: #a0a0b8;
-            margin-bottom: 30px;
-            font-size: 0.95rem;
-        }
-        .form-group { margin-bottom: 20px; }
-        label {
-            display: block;
-            margin-bottom: 8px;
-            font-weight: 500;
-            color: #c0c8e0;
-        }
-        input {
-            width: 100%;
-            padding: 14px 18px;
-            background: rgba(255,255,255,0.05);
-            border: 1px solid rgba(255,255,255,0.1);
-            border-radius: 14px;
-            color: #fff;
-            font-family: 'Tajawal', sans-serif;
-            font-size: 1rem;
-            transition: 0.2s;
-        }
-        input:focus {
-            outline: none;
-            border-color: #00d2ff;
-            box-shadow: 0 0 0 3px rgba(0,210,255,0.1);
-        }
-        .btn {
-            width: 100%;
-            padding: 14px;
-            border: none;
-            border-radius: 14px;
-            background: linear-gradient(135deg, #00ff94, #00d2ff);
-            color: #000;
-            font-family: 'Tajawal', sans-serif;
-            font-weight: 700;
-            font-size: 1.1rem;
-            cursor: pointer;
-            transition: 0.3s;
-        }
-        .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 25px rgba(0,255,148,0.2);
-        }
-        .error {
-            background: rgba(255,50,50,0.1);
-            border: 1px solid #ff5252;
-            color: #ff5252;
-            padding: 12px;
-            border-radius: 12px;
-            margin-bottom: 20px;
-            text-align: center;
-        }
-        .success {
-            background: rgba(0,255,148,0.1);
-            border: 1px solid #00ff94;
-            color: #00ff94;
-            padding: 12px;
-            border-radius: 12px;
-            margin-bottom: 20px;
-            text-align: center;
-        }
-        .link {
-            text-align: center;
-            margin-top: 20px;
-            color: #a0a0b8;
-        }
-        .link a {
-            color: #00d2ff;
-            text-decoration: none;
-            font-weight: 500;
-        }
-        .link a:hover { text-decoration: underline; }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#050510">
+<title>✨ Anas Wadi — {{ title }}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  min-height:100vh; background:#050510; color:#e8eaf6;
+  font-family:'Tajawal',sans-serif;
+  display:flex; align-items:center; justify-content:center;
+  overflow:hidden;
+}
+body::before {
+  content:''; position:fixed; inset:0;
+  background:
+    radial-gradient(ellipse 80% 60% at 20% 10%, rgba(0,210,255,0.08) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 50% at 80% 80%, rgba(124,77,255,0.08) 0%, transparent 60%);
+  pointer-events:none;
+}
+.stars { position:fixed; inset:0; pointer-events:none; overflow:hidden; }
+.star {
+  position:absolute; border-radius:50%; background:white;
+  animation:twinkle var(--d,3s) ease-in-out infinite;
+}
+@keyframes twinkle {
+  0%,100%{opacity:0;transform:scale(0.5);}
+  50%{opacity:var(--op,0.5);transform:scale(1);}
+}
+.card {
+  background:rgba(255,255,255,0.04);
+  border:1px solid rgba(255,255,255,0.08);
+  border-radius:24px; padding:40px 36px;
+  width:100%; max-width:420px; margin:20px;
+  backdrop-filter:blur(20px);
+  animation:cardPop 0.5s cubic-bezier(0.4,0,0.2,1) both;
+  position:relative; z-index:1;
+}
+@keyframes cardPop {
+  from{opacity:0;transform:translateY(30px) scale(0.97);}
+  to{opacity:1;transform:translateY(0) scale(1);}
+}
+.logo {
+  text-align:center; font-size:28px; font-weight:900;
+  background:linear-gradient(90deg,#00ff94,#00d2ff,#7c4dff);
+  -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+  background-clip:text; margin-bottom:8px;
+  background-size:200%;
+  animation:shimmer 4s linear infinite;
+}
+@keyframes shimmer{0%{background-position:0%}100%{background-position:200%}}
+.subtitle { text-align:center; color:rgba(232,234,246,0.5); font-size:14px; margin-bottom:32px; }
+.tabs {
+  display:flex; background:rgba(255,255,255,0.04);
+  border-radius:14px; padding:4px; margin-bottom:28px;
+  border:1px solid rgba(255,255,255,0.06);
+}
+.tab {
+  flex:1; padding:10px; text-align:center; border-radius:10px;
+  font-size:14px; font-weight:700; cursor:pointer;
+  font-family:'Tajawal',sans-serif; border:none;
+  transition:all 0.25s; color:rgba(232,234,246,0.5);
+  background:transparent;
+}
+.tab.active {
+  background:linear-gradient(135deg,#00ff94,#00d2ff);
+  color:#000;
+}
+.form { display:flex; flex-direction:column; gap:16px; }
+.input-group { position:relative; }
+.input-group i {
+  position:absolute; right:16px; top:50%; transform:translateY(-50%);
+  color:rgba(232,234,246,0.35); font-size:15px; pointer-events:none;
+}
+input[type=text], input[type=email], input[type=password] {
+  width:100%; background:rgba(255,255,255,0.06);
+  border:1px solid rgba(255,255,255,0.1);
+  color:#e8eaf6; border-radius:14px;
+  padding:13px 46px 13px 16px;
+  font-size:15px; font-family:'Tajawal',sans-serif;
+  transition:all 0.25s; direction:rtl;
+}
+input:focus {
+  outline:none;
+  border-color:rgba(0,210,255,0.5);
+  box-shadow:0 0 0 3px rgba(0,210,255,0.1);
+  background:rgba(255,255,255,0.08);
+}
+input::placeholder { color:rgba(232,234,246,0.35); }
+.btn {
+  background:linear-gradient(135deg,#00ff94,#00d2ff);
+  border:none; border-radius:14px; padding:14px;
+  color:#000; font-weight:800; font-size:16px;
+  font-family:'Tajawal',sans-serif; cursor:pointer;
+  transition:all 0.25s; margin-top:4px;
+}
+.btn:hover { transform:translateY(-2px); box-shadow:0 8px 25px rgba(0,210,255,0.35); }
+.btn:active { transform:scale(0.98); }
+.error-msg {
+  background:rgba(255,80,80,0.1); border:1px solid rgba(255,80,80,0.3);
+  color:#ff8080; padding:10px 16px; border-radius:10px;
+  font-size:13px; text-align:center;
+  {% if not error %}display:none;{% endif %}
+}
+.success-msg {
+  background:rgba(0,255,148,0.1); border:1px solid rgba(0,255,148,0.3);
+  color:#00ff94; padding:10px 16px; border-radius:10px;
+  font-size:13px; text-align:center;
+  {% if not success %}display:none;{% endif %}
+}
+.divider { text-align:center; color:rgba(232,234,246,0.3); font-size:12px; margin:4px 0; }
+</style>
 </head>
 <body>
-    <div class="container">
-        <h1>⚡ Wadi</h1>
-        <p class="subtitle">ذكاء اصطناعي متطور</p>
-        {% if error %}<div class="error">{{ error }}</div>{% endif %}
-        {% if success %}<div class="success">{{ success }}</div>{% endif %}
-        {% if mode == 'login' %}
-        <form method="POST">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <div class="form-group">
-                <label>البريد الإلكتروني</label>
-                <input type="email" name="email" required placeholder="example@email.com">
-            </div>
-            <div class="form-group">
-                <label>كلمة المرور</label>
-                <input type="password" name="password" required placeholder="********">
-            </div>
-            <button type="submit" class="btn">تسجيل الدخول</button>
-        </form>
-        <div class="link">جديد هنا؟ <a href="/register">أنشئ حساباً</a></div>
-        {% else %}
-        <form method="POST">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <div class="form-group">
-                <label>الاسم</label>
-                <input type="text" name="name" required placeholder="اسمك الكامل" value="{{ prefill_name or '' }}">
-            </div>
-            <div class="form-group">
-                <label>البريد الإلكتروني</label>
-                <input type="email" name="email" required placeholder="example@email.com" value="{{ prefill_email or '' }}">
-            </div>
-            <div class="form-group">
-                <label>كلمة المرور</label>
-                <input type="password" name="password" required placeholder="6 أحرف على الأقل">
-            </div>
-            <button type="submit" class="btn">إنشاء الحساب</button>
-        </form>
-        <div class="link">لديك حساب؟ <a href="/login">سجل دخولك</a></div>
-        {% endif %}
+<div class="stars" id="stars"></div>
+<div class="card">
+  <div class="logo">✨ Anas Wadi</div>
+  <div class="subtitle">مساعد الذكاء الاصطناعي 🇱🇾</div>
+
+  <div class="tabs">
+    <button class="tab {% if mode == 'login' %}active{% endif %}"
+      onclick="location.href='/login'">
+      <i class="fa-solid fa-right-to-bracket"></i> دخول
+    </button>
+    <button class="tab {% if mode == 'register' %}active{% endif %}"
+      onclick="location.href='/register'">
+      <i class="fa-solid fa-user-plus"></i> حساب جديد
+    </button>
+  </div>
+
+  {% if error %}
+  <div class="error-msg">⚠️ {{ error }}</div>
+  {% endif %}
+  {% if success %}
+  <div class="success-msg">✅ {{ success }}</div>
+  {% endif %}
+
+  {% if mode == 'login' %}
+  <form class="form" method="POST" action="/login">
+    <div class="input-group">
+      <i class="fa-solid fa-envelope"></i>
+      <input type="email" name="email" placeholder="البريد الإلكتروني" required autofocus>
     </div>
+    <div class="input-group">
+      <i class="fa-solid fa-lock"></i>
+      <input type="password" name="password" placeholder="كلمة المرور" required>
+    </div>
+    <button type="submit" class="btn">
+      <i class="fa-solid fa-right-to-bracket"></i> دخول
+    </button>
+  </form>
+  {% else %}
+  <form class="form" method="POST" action="/register">
+    <div class="input-group">
+      <i class="fa-solid fa-user"></i>
+      <input type="text" name="name" placeholder="الاسم" required autofocus
+             value="{{ prefill_name or '' }}">
+    </div>
+    <div class="input-group">
+      <i class="fa-solid fa-envelope"></i>
+      <input type="email" name="email" placeholder="البريد الإلكتروني" required
+             value="{{ prefill_email or '' }}">
+    </div>
+    <div class="input-group">
+      <i class="fa-solid fa-lock"></i>
+      <input type="password" name="password" placeholder="كلمة المرور (6 أحرف على الأقل)" required minlength="6">
+    </div>
+    <button type="submit" class="btn">
+      <i class="fa-solid fa-user-plus"></i> إنشاء حساب
+    </button>
+  </form>
+  {% endif %}
+</div>
+
+<script>
+const s = document.getElementById('stars');
+for(let i=0;i<55;i++){
+  const el = document.createElement('div');
+  el.className='star';
+  const sz = Math.random()*2.5+0.5;
+  el.style.cssText=`width:${sz}px;height:${sz}px;left:${Math.random()*100}%;top:${Math.random()*100}%;--d:${(Math.random()*4+2).toFixed(1)}s;--op:${(Math.random()*0.4+0.2).toFixed(2)};animation-delay:${(Math.random()*5).toFixed(1)}s`;
+  s.appendChild(el);
+}
+</script>
 </body>
 </html>
 '''
 
-# FIX #1: HTML template is now complete — all tags properly closed,
-# JavaScript section fully implemented.
 HTML = '''
 <!DOCTYPE html>
-<html dir="rtl" lang="ar">
+<html dir="rtl" data-theme="dark">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Anas Wadi AI</title>
-    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700;900&display=swap" rel="stylesheet">
-    <link rel="manifest" href="/manifest.json">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        :root {
-            --bg: #050510;
-            --surface: rgba(255,255,255,0.03);
-            --border: rgba(255,255,255,0.06);
-            --text: #e8eaf6;
-            --muted: #8a8aaa;
-            --accent: #00d2ff;
-            --green: #00ff94;
-            --msg-user: linear-gradient(135deg, var(--green), var(--accent));
-        }
-        body {
-            font-family: 'Tajawal', sans-serif;
-            background: var(--bg);
-            color: var(--text);
-            height: 100dvh;
-            display: flex;
-            overflow: hidden;
-        }
-        /* ─── SIDEBAR ─────────────────────── */
-        .sidebar {
-            width: 300px;
-            background: rgba(10,10,20,0.8);
-            border-left: 1px solid var(--border);
-            display: flex;
-            flex-direction: column;
-            transition: 0.3s;
-        }
-        .sidebar-header {
-            padding: 20px;
-            border-bottom: 1px solid var(--border);
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-        .sidebar-header .avatar {
-            width: 42px;
-            height: 42px;
-            border-radius: 12px;
-            background: linear-gradient(135deg, var(--green), var(--accent));
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 700;
-            color: #000;
-            font-size: 1.2rem;
-        }
-        .sidebar-header .user-info { flex: 1; }
-        .sidebar-header .user-info h3 { font-size: 1rem; font-weight: 600; }
-        .sidebar-header .user-info p { font-size: 0.75rem; color: var(--muted); }
-        .new-chat-btn {
-            margin: 16px;
-            padding: 12px;
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            color: white;
-            font-weight: 600;
-            cursor: pointer;
-            text-align: center;
-            transition: 0.2s;
-        }
-        .new-chat-btn:hover { background: rgba(255,255,255,0.06); }
-        .chat-list { flex: 1; overflow-y: auto; padding: 8px; }
-        .chat-item {
-            padding: 12px;
-            border-radius: 10px;
-            margin-bottom: 4px;
-            cursor: pointer;
-            transition: 0.2s;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            color: #ccc;
-        }
-        .chat-item.active, .chat-item:hover { background: rgba(255,255,255,0.05); }
-        .chat-item .delete-chat {
-            opacity: 0;
-            color: #ff5252;
-            background: none;
-            border: none;
-            cursor: pointer;
-            font-size: 1rem;
-        }
-        .chat-item:hover .delete-chat { opacity: 1; }
-        .sidebar-footer {
-            padding: 12px;
-            border-top: 1px solid var(--border);
-        }
-        .sidebar-footer a {
-            color: var(--muted);
-            font-size: 0.8rem;
-            text-decoration: none;
-            margin: 0 5px;
-        }
-        /* ─── MAIN ────────────────────────── */
-        .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-        .chat-header {
-            padding: 16px 20px;
-            border-bottom: 1px solid var(--border);
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-        .mode-selector {
-            display: flex;
-            gap: 8px;
-            background: var(--surface);
-            padding: 6px;
-            border-radius: 20px;
-            flex-wrap: wrap;
-        }
-        .mode-btn {
-            padding: 6px 16px;
-            border-radius: 16px;
-            border: none;
-            background: transparent;
-            color: #aaa;
-            font-family: inherit;
-            cursor: pointer;
-            transition: 0.2s;
-            font-size: 0.85rem;
-            font-weight: 500;
-        }
-        .mode-btn.active {
-            background: linear-gradient(135deg, var(--green), var(--accent));
-            color: #000;
-        }
-        .messages {
-            flex: 1;
-            overflow-y: auto;
-            padding: 20px;
-            display: flex;
-            flex-direction: column;
-            gap: 16px;
-        }
-        .message {
-            max-width: 80%;
-            animation: fadeIn 0.3s ease;
-        }
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to   { opacity: 1; transform: translateY(0); }
-        }
-        .message.user {
-            align-self: flex-end;
-            background: var(--msg-user);
-            color: #000;
-            border-radius: 20px 20px 6px 20px;
-            padding: 12px 18px;
-        }
-        .message.ai {
-            align-self: flex-start;
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 20px 20px 20px 6px;
-            padding: 14px 18px;
-        }
-        .message img {
-            max-width: 200px;
-            border-radius: 12px;
-            margin: 8px 0;
-            cursor: pointer;
-            transition: 0.2s;
-        }
-        .message img:hover { transform: scale(1.02); }
-        /* ─── INPUT AREA ──────────────────── */
-        .input-area {
-            padding: 16px 20px;
-            border-top: 1px solid var(--border);
-            background: var(--bg);
-        }
-        .input-row {
-            display: flex;
-            gap: 10px;
-            align-items: center;
-        }
-        .input-wrapper {
-            flex: 1;
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 20px;
-            padding: 8px 16px;
-            display: flex;
-            align-items: center;
-        }
-        .input-wrapper textarea {
-            flex: 1;
-            background: transparent;
-            border: none;
-            outline: none;
-            color: white;
-            font-family: inherit;
-            font-size: 0.95rem;
-            resize: none;
-            max-height: 120px;
-            line-height: 1.4;
-        }
-        .attach-btn {
-            background: none;
-            border: none;
-            color: var(--accent);
-            cursor: pointer;
-            font-size: 1.3rem;
-            padding: 4px;
-            position: relative;
-        }
-        .file-menu {
-            display: none;
-            position: absolute;
-            bottom: 110%;
-            right: 0;
-            background: #1a1a2e;
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 8px 0;
-            min-width: 150px;
-            z-index: 10;
-            box-shadow: 0 10px 20px rgba(0,0,0,0.5);
-        }
-        .file-menu.show { display: block; }
-        .file-menu div {
-            padding: 10px 16px;
-            cursor: pointer;
-            color: #ccc;
-            transition: 0.2s;
-        }
-        .file-menu div:hover { background: rgba(255,255,255,0.05); color: white; }
-        .send-btn {
-            width: 44px;
-            height: 44px;
-            border-radius: 50%;
-            border: none;
-            background: linear-gradient(135deg, var(--green), var(--accent));
-            color: #000;
-            font-size: 1.3rem;
-            cursor: pointer;
-            transition: 0.2s;
-        }
-        .send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-        /* ─── LOADER ──────────────────────── */
-        .loader { display: none; text-align: center; color: var(--muted); padding: 10px; }
-        .loader.active { display: block; }
-        .typing-dot {
-            display: inline-block;
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: var(--accent);
-            animation: bounce 1.4s infinite;
-        }
-        .typing-dot:nth-child(2) { animation-delay: 0.2s; }
-        .typing-dot:nth-child(3) { animation-delay: 0.4s; }
-        @keyframes bounce {
-            0%,60%,100% { transform: translateY(0); }
-            30%          { transform: translateY(-8px); }
-        }
-        /* ─── MODAL ───────────────────────── */
-        .modal {
-            display: none;
-            position: fixed;
-            top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.8);
-            z-index: 1000;
-            justify-content: center;
-            align-items: center;
-        }
-        .modal.show { display: flex; }
-        .modal-content {
-            background: #111;
-            padding: 30px;
-            border-radius: 20px;
-            text-align: center;
-            max-width: 400px;
-            width: 90%;
-        }
-        .modal img { max-width: 90vw; max-height: 80vh; border-radius: 12px; }
-        /* ─── RESPONSIVE ──────────────────── */
-        @media (max-width: 768px) {
-            .sidebar { position: absolute; right: -100%; z-index: 50; width: 280px; }
-            .sidebar.open { right: 0; }
-            .message { max-width: 95%; }
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#050510">
+<title>✨ Anas Wadi ✨</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700;900&family=Cairo:wght@300;400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+<style>
+/* ═══════════════════════════════════════════
+   CSS VARIABLES — Dark / Light Theme
+═══════════════════════════════════════════ */
+:root {
+  --bg: #050510;
+  --surface: rgba(255,255,255,0.04);
+  --surface2: rgba(255,255,255,0.08);
+  --surface3: rgba(255,255,255,0.12);
+  --border: rgba(255,255,255,0.08);
+  --border-glow: rgba(0,210,255,0.35);
+  --text: #e8eaf6;
+  --text-dim: rgba(232,234,246,0.55);
+  --text-muted: rgba(232,234,246,0.35);
+  --accent1: #00d2ff;
+  --accent2: #00ff94;
+  --accent3: #7c4dff;
+  --accent4: #ff6b6b;
+  --user-grad: linear-gradient(135deg, #00ff94, #00d2ff);
+  --glow: 0 0 30px rgba(0,210,255,0.15);
+  --glow-strong: 0 0 40px rgba(0,210,255,0.3);
+  --sidebar-bg: rgba(4,4,14,0.98);
+  --header-bg: rgba(5,5,16,0.88);
+}
+[data-theme="light"] {
+  --bg: #f0f4ff;
+  --surface: rgba(0,0,0,0.04);
+  --surface2: rgba(0,0,0,0.07);
+  --surface3: rgba(0,0,0,0.11);
+  --border: rgba(0,0,0,0.1);
+  --border-glow: rgba(0,100,200,0.3);
+  --text: #0d1117;
+  --text-dim: rgba(13,17,23,0.6);
+  --text-muted: rgba(13,17,23,0.38);
+  --accent1: #0077cc;
+  --accent2: #00aa66;
+  --accent3: #5533cc;
+  --glow: 0 0 30px rgba(0,100,200,0.1);
+  --glow-strong: 0 0 40px rgba(0,100,200,0.2);
+  --sidebar-bg: rgba(235,240,255,0.98);
+  --header-bg: rgba(240,244,255,0.88);
+}
+
+/* ═══════════════════════════════════════════
+   RESET & BASE
+═══════════════════════════════════════════ */
+* { margin:0; padding:0; box-sizing:border-box; }
+html { scroll-behavior:smooth; }
+body {
+  background:var(--bg); color:var(--text);
+  font-family:'Tajawal','Cairo',sans-serif;
+  min-height:100vh; display:flex; flex-direction:column;
+  transition:background 0.4s, color 0.4s; overflow-x:hidden;
+}
+body::before {
+  content:''; position:fixed; inset:0; pointer-events:none; z-index:0;
+  background:
+    radial-gradient(ellipse 80% 60% at 20% 10%, rgba(0,210,255,0.06) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 50% at 80% 80%, rgba(124,77,255,0.06) 0%, transparent 60%),
+    radial-gradient(ellipse 50% 40% at 50% 50%, rgba(0,255,148,0.03) 0%, transparent 70%);
+  animation:bgPulse 8s ease-in-out infinite alternate;
+}
+@keyframes bgPulse { from{opacity:0.7} to{opacity:1} }
+
+/* ═══════════════════════════════════════════
+   STARS
+═══════════════════════════════════════════ */
+.stars { position:fixed; inset:0; pointer-events:none; z-index:0; overflow:hidden; }
+.star {
+  position:absolute; border-radius:50%; background:white;
+  animation:twinkle var(--d,3s) ease-in-out infinite;
+}
+@keyframes twinkle {
+  0%,100%{opacity:0;transform:scale(0.5)}
+  50%{opacity:var(--op,0.6);transform:scale(1)}
+}
+
+/* ═══════════════════════════════════════════
+   HEADER — Clean, Professional, Mobile-First
+═══════════════════════════════════════════ */
+.header {
+  position:sticky; top:0; z-index:100;
+  background:var(--header-bg);
+  backdrop-filter:blur(24px) saturate(1.6);
+  -webkit-backdrop-filter:blur(24px);
+  border-bottom:1px solid var(--border);
+  padding:0 16px;
+  height:58px;
+  display:flex; align-items:center; gap:10px;
+  transition:background 0.3s;
+}
+
+/* Left slot: menu button */
+.header-left { display:flex; align-items:center; gap:8px; flex-shrink:0; }
+
+/* Center slot: logo takes full remaining space */
+.header-center { flex:1; display:flex; justify-content:center; align-items:center; }
+
+/* Right slot: actions */
+.header-right { display:flex; align-items:center; gap:6px; flex-shrink:0; }
+
+.logo {
+  font-size:20px; font-weight:900; letter-spacing:-0.3px; white-space:nowrap;
+  background:linear-gradient(90deg,var(--accent2),var(--accent1),var(--accent3));
+  -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+  background-clip:text; animation:logoShimmer 4s linear infinite; background-size:200%;
+  text-shadow:none;
+}
+@keyframes logoShimmer{0%{background-position:0% 50%}100%{background-position:200% 50%}}
+
+.icon-btn {
+  background:var(--surface); border:1px solid var(--border);
+  color:var(--text); width:38px; height:38px;
+  border-radius:10px; cursor:pointer; font-size:15px;
+  transition:all 0.22s; display:flex; align-items:center; justify-content:center;
+  position:relative; overflow:hidden; text-decoration:none; flex-shrink:0;
+}
+.icon-btn::before {
+  content:''; position:absolute; inset:0;
+  background:linear-gradient(135deg,var(--accent1),var(--accent2));
+  opacity:0; transition:opacity 0.22s;
+}
+.icon-btn:hover { border-color:var(--border-glow); transform:translateY(-1px); box-shadow:var(--glow); }
+.icon-btn:hover::before { opacity:0.12; }
+.icon-btn:active { transform:scale(0.94); }
+.icon-btn i { position:relative; z-index:1; }
+
+/* ═══════════════════════════════════════════
+   SIDEBAR — Professional with User Profile & Delete
+═══════════════════════════════════════════ */
+.sidebar {
+  position:fixed; right:-300px; top:0;
+  width:280px; height:100vh;
+  background:var(--sidebar-bg); backdrop-filter:blur(30px);
+  border-left:1px solid var(--border);
+  transition:right 0.36s cubic-bezier(0.4,0,0.2,1);
+  z-index:200; display:flex; flex-direction:column;
+}
+[data-theme="light"] .sidebar { box-shadow:-4px 0 30px rgba(0,0,0,0.08); }
+.sidebar.open { right:0; }
+
+.sidebar-overlay {
+  display:none; position:fixed; inset:0; z-index:199;
+  background:rgba(0,0,0,0.5); backdrop-filter:blur(4px);
+  transition:opacity 0.3s;
+}
+.sidebar-overlay.open { display:block; }
+
+/* Sidebar user profile card */
+.sidebar-profile {
+  display:flex; align-items:center; gap:12px;
+  padding:20px 16px 14px;
+  border-bottom:1px solid var(--border);
+  background:var(--surface);
+}
+.sidebar-avatar {
+  width:42px; height:42px; border-radius:12px; flex-shrink:0;
+  background:linear-gradient(135deg,var(--accent2),var(--accent1));
+  display:flex; align-items:center; justify-content:center;
+  font-size:18px; font-weight:900; color:#000;
+  box-shadow:0 4px 14px rgba(0,210,255,0.3);
+}
+.sidebar-profile-info { flex:1; min-width:0; }
+.sidebar-profile-name { font-size:14px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.sidebar-profile-badge {
+  display:inline-flex; align-items:center; gap:4px;
+  font-size:10px; color:var(--accent2); margin-top:2px;
+  background:rgba(0,255,148,0.1); padding:2px 8px; border-radius:20px;
+  border:1px solid rgba(0,255,148,0.2);
+}
+
+/* Sidebar top actions */
+.sidebar-actions { padding:12px 14px; }
+.new-chat-btn {
+  background:linear-gradient(135deg,var(--accent2),var(--accent1));
+  border:none; border-radius:12px; padding:11px 16px;
+  font-family:'Tajawal',sans-serif; font-size:14px; font-weight:700;
+  color:#000; cursor:pointer; transition:all 0.25s; width:100%;
+  display:flex; align-items:center; gap:8px; justify-content:center;
+  box-shadow:0 4px 18px rgba(0,210,255,0.25);
+}
+.new-chat-btn:hover { transform:translateY(-1px); box-shadow:0 6px 24px rgba(0,210,255,0.4); }
+.new-chat-btn:active { transform:scale(0.98); }
+
+/* Sidebar chat list */
+.sidebar-label {
+  padding:4px 16px 8px;
+  font-size:11px; font-weight:700; color:var(--text-muted);
+  text-transform:uppercase; letter-spacing:1px;
+}
+.chat-list-scroll { flex:1; overflow-y:auto; padding:0 10px 10px; }
+.chat-list-scroll::-webkit-scrollbar { width:3px; }
+.chat-list-scroll::-webkit-scrollbar-thumb { background:var(--border); border-radius:10px; }
+
+.chat-item {
+  display:flex; align-items:center; gap:8px;
+  padding:9px 12px; border-radius:10px; cursor:pointer;
+  transition:all 0.2s; margin-bottom:3px;
+  border:1px solid transparent;
+  position:relative;
+}
+.chat-item:hover { background:var(--surface2); border-color:var(--border); }
+.chat-item.active { background:rgba(0,210,255,0.08); border-color:rgba(0,210,255,0.25); }
+.chat-item-icon { font-size:14px; flex-shrink:0; opacity:0.7; }
+.chat-item-text {
+  flex:1; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  color:var(--text-dim);
+}
+.chat-item.active .chat-item-text { color:var(--text); }
+.chat-item-delete {
+  opacity:0; flex-shrink:0; width:24px; height:24px;
+  border-radius:6px; border:none; background:rgba(255,80,80,0.12);
+  color:#ff6b6b; cursor:pointer; font-size:11px;
+  display:flex; align-items:center; justify-content:center;
+  transition:all 0.18s;
+}
+.chat-item:hover .chat-item-delete { opacity:1; }
+.chat-item-delete:hover { background:rgba(255,80,80,0.25); transform:scale(1.1); }
+
+/* Sidebar footer */
+.sidebar-footer {
+  padding:12px 14px; border-top:1px solid var(--border);
+  display:flex; gap:8px;
+}
+.sidebar-footer-btn {
+  flex:1; background:var(--surface); border:1px solid var(--border);
+  color:var(--text-dim); padding:9px 12px; border-radius:10px;
+  font-family:'Tajawal',sans-serif; font-size:12px; font-weight:600;
+  cursor:pointer; transition:all 0.2s; display:flex; align-items:center; gap:6px; justify-content:center;
+}
+.sidebar-footer-btn:hover { border-color:var(--border-glow); color:var(--text); }
+
+/* ═══════════════════════════════════════════
+   MODE BUTTONS
+═══════════════════════════════════════════ */
+.modes {
+  display:flex; gap:7px; padding:10px 16px;
+  overflow-x:auto; position:relative; z-index:1; scrollbar-width:none;
+  border-bottom:1px solid var(--border);
+}
+.modes::-webkit-scrollbar { display:none; }
+.mode-btn {
+  background:var(--surface); border:1px solid var(--border);
+  color:var(--text-dim); padding:7px 15px; border-radius:20px;
+  font-size:12px; font-weight:600; white-space:nowrap; cursor:pointer;
+  transition:all 0.22s; font-family:'Tajawal',sans-serif;
+}
+.mode-btn:hover { border-color:var(--border-glow); color:var(--text); }
+.mode-btn.active {
+  background:linear-gradient(135deg,var(--accent2),var(--accent1));
+  color:#000; border-color:transparent;
+  box-shadow:0 3px 14px rgba(0,210,255,0.3);
+  font-weight:800;
+}
+
+/* ═══════════════════════════════════════════
+   CHAT CONTAINER
+═══════════════════════════════════════════ */
+.chat-container {
+  flex:1; padding:20px 16px 10px;
+  max-width:800px; width:100%; margin:0 auto; position:relative; z-index:1;
+}
+
+/* ═══════════════════════════════════════════
+   WELCOME SCREEN
+═══════════════════════════════════════════ */
+.welcome { text-align:center; padding:44px 20px; animation:fadeUp 0.6s ease both; }
+@keyframes fadeUp { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
+.welcome-icon { font-size:54px; margin-bottom:18px; animation:floatIcon 3s ease-in-out infinite; display:block; }
+@keyframes floatIcon { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-10px)} }
+.welcome h2 { font-size:24px; font-weight:900; margin-bottom:10px; }
+.welcome p { color:var(--text-dim); line-height:1.9; font-size:15px; }
+.welcome-cards { display:flex; gap:10px; margin-top:28px; flex-wrap:wrap; justify-content:center; }
+.welcome-card {
+  background:var(--surface); border:1px solid var(--border);
+  border-radius:14px; padding:14px 16px; cursor:pointer;
+  transition:all 0.25s; text-align:right; min-width:140px; max-width:190px; font-size:13px;
+}
+.welcome-card:hover {
+  border-color:var(--border-glow); transform:translateY(-4px);
+  box-shadow:var(--glow-strong); background:var(--surface2);
+}
+.welcome-card .card-icon { font-size:22px; margin-bottom:6px; }
+.welcome-card .card-title { font-weight:800; margin-bottom:4px; }
+.welcome-card .card-desc { color:var(--text-dim); font-size:11px; }
+
+/* ═══════════════════════════════════════════
+   MESSAGES
+═══════════════════════════════════════════ */
+.message { margin:14px 0; animation:msgSlide 0.35s cubic-bezier(0.4,0,0.2,1) both; }
+@keyframes msgSlide { from{opacity:0;transform:translateY(16px) scale(0.97)} to{opacity:1;transform:translateY(0) scale(1)} }
+
+.user-msg {
+  background:var(--user-grad); color:#000; font-weight:700;
+  padding:13px 18px; border-radius:20px 20px 6px 20px;
+  margin-right:auto; max-width:78%;
+  box-shadow:0 6px 24px rgba(0,255,148,0.22);
+  font-size:15px; line-height:1.75; word-break:break-word;
+}
+
+.ai-msg {
+  background:var(--surface);
+  border:1px solid var(--border);
+  padding:16px 20px; border-radius:20px 20px 20px 6px;
+  max-width:86%; font-size:15px; line-height:1.95;
+  position:relative; word-break:break-word;
+  transition:border-color 0.3s, box-shadow 0.3s;
+}
+.ai-msg:hover { border-color:var(--border-glow); box-shadow:var(--glow); }
+.ai-msg h2 { font-size:18px; font-weight:900; margin:14px 0 6px; color:var(--accent1); }
+.ai-msg h3 { font-size:16px; font-weight:800; margin:12px 0 5px; color:var(--accent2); }
+.ai-msg h4 { font-size:15px; font-weight:700; margin:10px 0 4px; color:var(--accent3); }
+.ai-msg strong { font-weight:900; color:var(--accent1); }
+.ai-msg em { font-style:italic; color:var(--accent2); opacity:0.9; }
+.ai-msg p { margin:7px 0; }
+.ai-msg ul, .ai-msg ol { padding-right:24px; margin:10px 0; }
+.ai-msg li { margin:6px 0; line-height:1.85; }
+.ai-msg code {
+  background:rgba(0,210,255,0.1); border:1px solid rgba(0,210,255,0.2);
+  border-radius:5px; padding:2px 8px; font-size:13px; font-family:monospace;
+  color:var(--accent1);
+}
+.ai-msg pre {
+  background:#0d1117; border:1px solid rgba(0,210,255,0.18);
+  border-radius:12px; margin:14px 0;
+  overflow:hidden; position:relative;
+  box-shadow:0 4px 20px rgba(0,0,0,0.35);
+}
+[data-theme="light"] .ai-msg pre { background:#1a1f2e; }
+.ai-msg pre code {
+  background:none; border:none; padding:16px; font-size:13px;
+  color:#e6edf3; display:block; overflow-x:auto;
+  font-family:'Fira Code','Cascadia Code','Consolas',monospace;
+  line-height:1.7; white-space:pre;
+}
+/* Code block header with language badge + copy button */
+.code-header {
+  display:flex; align-items:center; justify-content:space-between;
+  background:rgba(0,210,255,0.07); border-bottom:1px solid rgba(0,210,255,0.15);
+  padding:7px 14px; font-size:12px;
+}
+.code-lang-badge {
+  color:var(--accent1); font-family:monospace; font-weight:700;
+  text-transform:uppercase; letter-spacing:0.5px;
+}
+.copy-code-btn {
+  background:var(--surface2); border:1px solid var(--border);
+  color:var(--text-dim); padding:3px 10px; border-radius:6px;
+  font-size:11px; cursor:pointer; font-family:'Tajawal',sans-serif;
+  transition:all 0.2s; display:flex; align-items:center; gap:4px;
+}
+.copy-code-btn:hover { border-color:var(--accent1); color:var(--accent1); background:rgba(0,210,255,0.08); }
+.copy-code-btn.copied { border-color:var(--accent2); color:var(--accent2); }
+
+/* Typing indicator */
+.typing-indicator { display:inline-flex; gap:5px; align-items:center; padding:4px 0; }
+.typing-indicator span {
+  width:7px; height:7px; border-radius:50%; background:var(--accent1);
+  animation:typing 1.2s ease-in-out infinite;
+}
+.typing-indicator span:nth-child(2) { animation-delay:0.2s; background:var(--accent2); }
+.typing-indicator span:nth-child(3) { animation-delay:0.4s; background:var(--accent3); }
+@keyframes typing {
+  0%,60%,100%{transform:translateY(0);opacity:0.4}
+  30%{transform:translateY(-8px);opacity:1}
+}
+
+/* Message extras */
+.file-badge {
+  display:inline-flex; align-items:center; gap:6px;
+  background:rgba(0,210,255,0.1); border:1px solid rgba(0,210,255,0.3);
+  padding:5px 12px; border-radius:8px; font-size:12px;
+  margin-bottom:6px; color:var(--accent1);
+}
+.msg-actions { display:flex; gap:6px; margin-top:8px; opacity:0; transition:opacity 0.2s; }
+.message:hover .msg-actions { opacity:1; }
+.msg-btn {
+  background:var(--surface); border:1px solid var(--border);
+  color:var(--text-dim); padding:5px 12px; border-radius:8px;
+  font-size:12px; cursor:pointer; font-family:'Tajawal',sans-serif; transition:all 0.2s;
+}
+.msg-btn:hover { border-color:var(--accent1); color:var(--text); }
+
+.generated-img {
+  max-width:100%; border-radius:14px; margin-top:12px; display:block;
+  box-shadow:0 8px 30px rgba(0,0,0,0.4); animation:imgReveal 0.5s ease both;
+}
+@keyframes imgReveal { from{opacity:0;transform:scale(0.94)} to{opacity:1;transform:scale(1)} }
+
+/* ═══════════════════════════════════════════
+   INPUT AREA
+═══════════════════════════════════════════ */
+.input-area {
+  position:sticky; bottom:0; z-index:10;
+  background:var(--header-bg); backdrop-filter:blur(20px);
+  border-top:1px solid var(--border); padding:10px 16px 14px;
+}
+
+.templates {
+  display:flex; gap:7px; margin-bottom:9px;
+  overflow-x:auto; padding-bottom:3px; scrollbar-width:none;
+  max-width:800px; margin-right:auto; margin-left:auto;
+}
+.templates::-webkit-scrollbar { display:none; }
+.template-btn {
+  background:var(--surface); border:1px solid var(--border);
+  color:var(--text-dim); padding:6px 14px; border-radius:20px;
+  font-size:12px; white-space:nowrap; cursor:pointer;
+  font-family:'Tajawal',sans-serif; transition:all 0.2s;
+}
+.template-btn:hover { border-color:var(--border-glow); color:var(--text); background:var(--surface2); }
+
+.input-wrapper { max-width:800px; margin:0 auto; display:flex; gap:8px; align-items:flex-end; }
+.textarea-wrap { flex:1; position:relative; }
+textarea {
+  width:100%; background:var(--surface2); border:1px solid var(--border);
+  color:var(--text); border-radius:16px; padding:13px 16px;
+  font-size:15px; font-family:'Tajawal',sans-serif;
+  resize:none; height:52px; max-height:130px;
+  transition:border-color 0.25s, box-shadow 0.25s; line-height:1.5;
+}
+textarea:focus {
+  outline:none; border-color:var(--accent1);
+  box-shadow:0 0 0 3px rgba(0,210,255,0.1);
+}
+textarea::placeholder { color:var(--text-muted); }
+#fileInput { display:none; }
+.send-btn {
+  background:linear-gradient(135deg,var(--accent2),var(--accent1));
+  border:none; border-radius:14px; width:52px; height:52px;
+  font-size:18px; color:#000; cursor:pointer; transition:all 0.25s; flex-shrink:0;
+  display:flex; align-items:center; justify-content:center;
+  box-shadow:0 4px 18px rgba(0,210,255,0.25);
+}
+.send-btn:hover:not(:disabled) { transform:scale(1.08); box-shadow:0 6px 22px rgba(0,210,255,0.45); }
+.send-btn:active:not(:disabled) { transform:scale(0.95); }
+.send-btn:disabled { opacity:0.45; cursor:not-allowed; }
+
+.file-preview {
+  max-width:800px; margin:0 auto 8px;
+  display:flex; align-items:center; gap:8px;
+  background:rgba(0,210,255,0.07); border:1px solid rgba(0,210,255,0.2);
+  padding:8px 14px; border-radius:10px; font-size:13px;
+}
+.file-preview.hidden { display:none; }
+
+/* ═══════════════════════════════════════════
+   MODALS
+═══════════════════════════════════════════ */
+.modal {
+  display:none; position:fixed; inset:0; z-index:300;
+  justify-content:center; align-items:center;
+  background:rgba(0,0,0,0.7); backdrop-filter:blur(8px);
+}
+.modal.open { display:flex; }
+.modal-content {
+  background:var(--bg); border:1px solid var(--border);
+  padding:32px; border-radius:22px; max-width:460px; width:90%;
+  text-align:center; animation:modalPop 0.3s cubic-bezier(0.4,0,0.2,1);
+}
+@keyframes modalPop { from{opacity:0;transform:scale(0.88) translateY(22px)} to{opacity:1;transform:scale(1) translateY(0)} }
+.support-btn {
+  display:inline-flex; align-items:center; gap:8px;
+  background:linear-gradient(135deg,#ff6b6b,#feca57);
+  color:#000; border:none; padding:12px 28px;
+  border-radius:14px; font-weight:800; cursor:pointer;
+  font-family:'Tajawal',sans-serif; font-size:15px;
+  text-decoration:none; margin-top:16px; transition:all 0.25s;
+}
+.support-btn:hover { transform:scale(1.05); box-shadow:0 6px 20px rgba(254,202,87,0.4); }
+
+/* Confirm delete modal */
+.confirm-modal-content {
+  background:var(--bg); border:1px solid rgba(255,80,80,0.3);
+  padding:28px; border-radius:20px; max-width:340px; width:90%;
+  text-align:center; animation:modalPop 0.3s cubic-bezier(0.4,0,0.2,1);
+}
+.confirm-modal-content h3 { font-size:18px; margin-bottom:10px; }
+.confirm-modal-content p { color:var(--text-dim); font-size:14px; margin-bottom:20px; }
+.confirm-btns { display:flex; gap:10px; justify-content:center; }
+.confirm-btn-del {
+  background:linear-gradient(135deg,#ff4444,#ff6b6b);
+  border:none; border-radius:12px; padding:10px 24px;
+  color:#fff; font-weight:700; font-family:'Tajawal',sans-serif;
+  font-size:14px; cursor:pointer; transition:all 0.2s;
+}
+.confirm-btn-del:hover { transform:scale(1.04); }
+.confirm-btn-cancel {
+  background:var(--surface2); border:1px solid var(--border);
+  border-radius:12px; padding:10px 24px;
+  color:var(--text); font-weight:700; font-family:'Tajawal',sans-serif;
+  font-size:14px; cursor:pointer; transition:all 0.2s;
+}
+.confirm-btn-cancel:hover { border-color:var(--border-glow); }
+
+/* ═══════════════════════════════════════════
+   TOAST
+═══════════════════════════════════════════ */
+.toast {
+  position:fixed; bottom:90px; left:50%;
+  transform:translateX(-50%) translateY(20px);
+  background:rgba(20,20,40,0.95); color:var(--text);
+  border:1px solid var(--border); padding:10px 22px;
+  border-radius:12px; z-index:999; font-size:13px;
+  opacity:0; transition:all 0.3s; pointer-events:none; backdrop-filter:blur(12px);
+  white-space:nowrap;
+}
+.toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+.toast.error { border-color:rgba(255,80,80,0.5); color:#ff8080; }
+.toast.success { border-color:rgba(0,255,148,0.5); color:var(--accent2); }
+
+/* ═══════════════════════════════════════════
+   SCROLLBAR
+═══════════════════════════════════════════ */
+::-webkit-scrollbar { width:5px; }
+::-webkit-scrollbar-track { background:transparent; }
+::-webkit-scrollbar-thumb { background:var(--border); border-radius:10px; }
+::-webkit-scrollbar-thumb:hover { background:var(--accent1); }
+
+/* ═══════════════════════════════════════════
+   RESPONSIVE — Mobile First
+═══════════════════════════════════════════ */
+@media (max-width:480px) {
+  .ai-msg, .user-msg { max-width:96%; }
+  .welcome h2 { font-size:20px; }
+  .welcome-cards { gap:8px; }
+  .welcome-card { min-width:130px; max-width:155px; }
+  .logo { font-size:18px; }
+  .header { padding:0 10px; height:54px; }
+  .icon-btn { width:36px; height:36px; font-size:14px; }
+  .modes { padding:8px 12px; gap:6px; }
+  .mode-btn { padding:6px 12px; font-size:11px; }
+}
+@media (max-width:360px) {
+  .header-right { gap:4px; }
+  .logo { font-size:16px; }
+}
+</style>
 </head>
 <body>
-    <!-- SIDEBAR -->
-    <div class="sidebar" id="sidebar">
-        <div class="sidebar-header">
-            <div class="avatar">{{ user_initial }}</div>
-            <div class="user-info">
-                <h3>{{ user_name }}</h3>
-                <p>مرحباً بك</p>
-            </div>
-        </div>
-        <button class="new-chat-btn" onclick="newChat()">✨ محادثة جديدة</button>
-        <div class="chat-list" id="chatList"></div>
-        <div class="sidebar-footer">
-            <a href="/logout">خروج</a>
-            <a href="/privacy">الخصوصية</a>
-            <a href="#" onclick="deleteAccount()">حذف الحساب</a>
-        </div>
+
+<!-- Stars background -->
+<div class="stars" id="stars"></div>
+
+<!-- Sidebar overlay -->
+<div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
+
+<!-- ═══════ SIDEBAR ═══════ -->
+<div class="sidebar" id="sidebar">
+  <!-- User profile -->
+  <div class="sidebar-profile">
+    <div class="sidebar-avatar" id="sidebarAvatar">{{ user_initial }}</div>
+    <div class="sidebar-profile-info">
+      <div class="sidebar-profile-name" id="sidebarName">{{ user_name }}</div>
+      <div class="sidebar-profile-badge"><i class="fa-solid fa-circle" style="font-size:7px;color:#00ff94"></i> متصل الآن</div>
     </div>
+  </div>
 
-    <!-- MAIN -->
-    <div class="main">
-        <div class="chat-header">
-            <button onclick="toggleSidebar()" style="background:none;border:none;color:white;font-size:1.4rem;cursor:pointer;">☰</button>
-            <div class="mode-selector" id="modeSelector">
-                <button class="mode-btn active" data-mode="fast">سريع</button>
-                <button class="mode-btn" data-mode="thinker">مفكر</button>
-                <button class="mode-btn" data-mode="coder">مبرمج</button>
-                <button class="mode-btn" data-mode="writer">كاتب</button>
-                <button class="mode-btn" data-mode="funny">مضحك</button>
-                <button class="mode-btn" data-mode="creative">مبدع</button>
-            </div>
-            <button onclick="shareChat()" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:1rem;">مشاركة</button>
-        </div>
+  <!-- New chat button -->
+  <div class="sidebar-actions">
+    <button class="new-chat-btn" onclick="newChat()">
+      <i class="fa-solid fa-plus"></i> محادثة جديدة
+    </button>
+  </div>
 
-        <div class="messages" id="messages">
-            <div style="text-align:center;color:var(--muted);margin-top:20vh;">
-                <h2>⚡ Wadi</h2>
-                <p>اسأل أي شيء... أنا هنا</p>
-            </div>
-        </div>
-
-        <div class="loader" id="loader">
-            <span class="typing-dot"></span>
-            <span class="typing-dot"></span>
-            <span class="typing-dot"></span>
-        </div>
-
-        <div class="input-area">
-            <div class="input-row">
-                <div class="input-wrapper">
-                    <textarea id="messageInput" rows="1" placeholder="اكتب سؤالك هنا..."></textarea>
-                    <div style="position:relative;">
-                        <button class="attach-btn" onclick="toggleFileMenu()">📎</button>
-                        <div class="file-menu" id="fileMenu">
-                            <div onclick="triggerFileInput('image')">🖼️ صورة</div>
-                            <div onclick="triggerFileInput('file')">📄 ملف</div>
-                            <div onclick="triggerFileInput('pdf')">📕 مستند PDF</div>
-                        </div>
-                    </div>
-                </div>
-                <button class="send-btn" id="sendBtn" onclick="sendMessage()">↑</button>
-            </div>
-            <input type="file" id="fileImage" accept="image/*"      style="display:none" onchange="handleFileSelect(this,'image')">
-            <input type="file" id="fileFile"  accept=".txt,.pdf"    style="display:none" onchange="handleFileSelect(this,'file')">
-            <input type="file" id="filePdf"   accept=".pdf"         style="display:none" onchange="handleFileSelect(this,'pdf')">
-        </div>
-    </div><!-- /.main -->
-
-    <!-- IMAGE MODAL -->
-    <div class="modal" id="imgModal" onclick="this.classList.remove('show')">
-        <div class="modal-content" onclick="event.stopPropagation()">
-            <img id="modalImg" src="" alt="image">
-        </div>
+  <!-- Chat list -->
+  <div class="sidebar-label">المحادثات السابقة</div>
+  <div class="chat-list-scroll">
+    <div id="chatList">
+      <div style="color:var(--text-dim);font-size:13px;text-align:center;padding:20px">
+        <div class="typing-indicator" style="justify-content:center;margin-bottom:8px"><span></span><span></span><span></span></div>
+        جاري التحميل...
+      </div>
     </div>
+  </div>
 
-    <!-- DELETE ACCOUNT MODAL -->
-    <div class="modal" id="deleteModal">
-        <div class="modal-content">
-            <h3 style="margin-bottom:16px;color:#ff5252;">حذف الحساب</h3>
-            <p style="color:#aaa;margin-bottom:20px;font-size:0.9rem;">هذا الإجراء لا يمكن التراجع عنه.</p>
-            <input type="password" id="deletePassword" placeholder="كلمة المرور" style="width:100%;margin-bottom:12px;">
-            <button onclick="confirmDelete()" style="width:100%;padding:12px;background:#ff5252;border:none;border-radius:12px;color:white;font-family:inherit;font-weight:700;cursor:pointer;margin-bottom:8px;">تأكيد الحذف</button>
-            <button onclick="document.getElementById('deleteModal').classList.remove('show')" style="width:100%;padding:12px;background:var(--surface);border:1px solid var(--border);border-radius:12px;color:white;font-family:inherit;cursor:pointer;">إلغاء</button>
-        </div>
+  <!-- Footer -->
+  <div class="sidebar-footer">
+    <button class="sidebar-footer-btn" onclick="toggleTheme()">
+      <i class="fa-solid fa-moon" id="sidebarThemeIcon"></i> الوضع
+    </button>
+    <button class="sidebar-footer-btn" onclick="showSupport()">
+      <i class="fa-solid fa-heart" style="color:#ff6b6b"></i> دعم
+    </button>
+    <a href="/logout" class="sidebar-footer-btn" style="text-decoration:none;color:inherit">
+      <i class="fa-solid fa-right-from-bracket"></i> خروج
+    </a>
+  </div>
+</div>
+
+<!-- ═══════ HEADER ═══════ -->
+<header class="header">
+  <div class="header-left">
+    <button class="icon-btn" onclick="toggleSidebar()" title="القائمة">
+      <i class="fa-solid fa-bars"></i>
+    </button>
+  </div>
+
+  <div class="header-center">
+    <span class="logo">✨ Anas Wadi ✨</span>
+  </div>
+
+  <div class="header-right">
+    <button class="icon-btn" onclick="toggleTheme()" title="تغيير الوضع" id="themeBtn">
+      <i class="fa-solid fa-moon"></i>
+    </button>
+    <button class="icon-btn" onclick="newChat()" title="محادثة جديدة">
+      <i class="fa-solid fa-plus"></i>
+    </button>
+    <button class="icon-btn" onclick="showSupport()" title="ادعمني">
+      <i class="fa-solid fa-heart" style="color:#ff6b6b"></i>
+    </button>
+  </div>
+</header>
+
+<!-- Mode selector -->
+<div class="modes">
+  <button class="mode-btn active" data-mode="fast" onclick="setMode('fast')">⚡ سريع</button>
+  <button class="mode-btn" data-mode="thinker" onclick="setMode('thinker')">🧠 مفكر</button>
+  <button class="mode-btn" data-mode="funny" onclick="setMode('funny')">😂 فكاهي</button>
+  <button class="mode-btn" data-mode="creative" onclick="setMode('creative')">🎨 مبدع</button>
+  <button class="mode-btn" data-mode="coder" onclick="setMode('coder')">💻 مبرمج</button>
+  <button class="mode-btn" data-mode="writer" onclick="setMode('writer')">✍️ كاتب</button>
+</div>
+
+<!-- Chat messages -->
+<div class="chat-container" id="chatContainer">
+  <div class="welcome" id="welcome">
+    <span class="welcome-icon">🌊</span>
+    <h2>مرحباً في <span style="background:linear-gradient(90deg,#00ff94,#00d2ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">Anas Wadi</span></h2>
+    <p>تم تطوير هذا الذكاء الاصطناعي بيد المهندس <strong>Anas Wadi</strong> من ليبيا 🇱🇾</p>
+    <p style="margin-top:6px">كيف يمكنني مساعدتك اليوم؟</p>
+    <div class="welcome-cards">
+      <div class="welcome-card" onclick="useTemplate('ارسم صورة: ')">
+        <div class="card-icon">🎨</div>
+        <div class="card-title">رسم صورة</div>
+        <div class="card-desc">توليد صور فائقة الجودة</div>
+      </div>
+      <div class="welcome-card" onclick="useTemplate('اشرحلي ')">
+        <div class="card-icon">💡</div>
+        <div class="card-title">شرح وتحليل</div>
+        <div class="card-desc">أشرح أي موضوع تريده</div>
+      </div>
+      <div class="welcome-card" onclick="useTemplate('اكتبلي كود ')">
+        <div class="card-icon">💻</div>
+        <div class="card-title">برمجة</div>
+        <div class="card-desc">أكتب ويصلح الكود</div>
+      </div>
+      <div class="welcome-card" onclick="document.getElementById('fileInput').click()">
+        <div class="card-icon">📄</div>
+        <div class="card-title">تحليل ملف</div>
+        <div class="card-desc">PDF أو صورة</div>
+      </div>
     </div>
+  </div>
+</div>
 
-    <script>
-        // ─── State ─────────────────────────────────────
-        let currentChatId = null;
-        let currentMode   = 'fast';
-        let history       = [];
-        let selectedFile  = null;
-        let csrfToken     = '{{ csrf_token }}';
+<!-- Input area -->
+<div class="input-area">
+  <div class="file-preview hidden" id="filePreview">
+    <i class="fa-solid fa-file" style="color:var(--accent1)"></i>
+    <span id="fileName">ملف مرفق</span>
+    <button class="msg-btn" onclick="removeFile()" style="margin-right:auto">
+      <i class="fa-solid fa-xmark"></i>
+    </button>
+  </div>
+  <div class="templates" id="templateBtns">
+    <button class="template-btn" onclick="useTemplate('ارسم صورة: ')">🎨 ارسم</button>
+    <button class="template-btn" onclick="useTemplate('لخصلي الملف')">📄 لخص</button>
+    <button class="template-btn" onclick="useTemplate('اكتبلي ايميل رسمي عن ')">📧 ايميل</button>
+    <button class="template-btn" onclick="useTemplate('ترجم للعربية: ')">🌐 ترجم</button>
+    <button class="template-btn" onclick="setMode('coder');useTemplate('اصنعلي مشروع Flask كامل: ')">🏗️ مشروع</button>
+    <button class="template-btn" onclick="setMode('coder');useTemplate('اكتبلي API بـ Flask يحتوي على ')">⚙️ API</button>
+    <button class="template-btn" onclick="setMode('coder');useTemplate('صلحلي هذا الكود:\n')">🔧 صلح Bug</button>
+    <button class="template-btn" onclick="useTemplate('اشرحلي بالتفصيل ')">💡 شرح</button>
+  </div>
+  <div class="input-wrapper">
+    <input type="file" id="fileInput" accept="image/*,.pdf" onchange="handleFile(this)">
+    <button type="button" class="icon-btn" onclick="document.getElementById('fileInput').click()" title="ارفع ملف">
+      <i class="fa-solid fa-paperclip"></i>
+    </button>
+    <div class="textarea-wrap">
+      <textarea id="messageInput"
+        placeholder="اكتب رسالتك... (Enter للإرسال، Shift+Enter لسطر جديد)"
+        onkeydown="handleKey(event)"
+        oninput="autoResize(this)"></textarea>
+    </div>
+    <button class="send-btn" id="sendBtn" onclick="sendMessage()" title="إرسال">
+      <i class="fa-solid fa-paper-plane"></i>
+    </button>
+  </div>
+</div>
 
-        // ─── Init ───────────────────────────────────────
-        document.addEventListener('DOMContentLoaded', () => {
-            loadChats();
-            setupModeSelector();
-            setupTextarea();
-        });
+<!-- Toast -->
+<div class="toast" id="toast"></div>
 
-        // ─── Mode Selector ──────────────────────────────
-        function setupModeSelector() {
-            document.querySelectorAll('.mode-btn').forEach(btn => {
-                btn.addEventListener('click', () => {
-                    document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
-                    btn.classList.add('active');
-                    currentMode = btn.dataset.mode;
-                });
-            });
-        }
+<!-- Support modal -->
+<div class="modal" id="supportModal" onclick="closeModalClick(event)">
+  <div class="modal-content">
+    <div style="font-size:40px;margin-bottom:15px">💙</div>
+    <h2 style="margin-bottom:12px;font-size:22px">شكراً لدعمك!</h2>
+    <p style="color:var(--text-dim);line-height:1.9;font-size:14px">
+      دعمكم هو الوقود اللي يخلينا نطور ونضيف ميزات جديدة باستمرار 🚀
+    </p>
+    <a href="https://www.paypal.com" target="_blank" class="support-btn">
+      <i class="fa-brands fa-paypal"></i> ادعم عبر PayPal
+    </a>
+    <p style="margin-top:20px;font-size:12px;color:var(--text-dim)">Anas Wadi • Libya 🇱🇾</p>
+  </div>
+</div>
 
-        // ─── Auto-resize textarea ───────────────────────
-        function setupTextarea() {
-            const ta = document.getElementById('messageInput');
-            ta.addEventListener('input', () => {
-                ta.style.height = 'auto';
-                ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
-            });
-            ta.addEventListener('keydown', e => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    sendMessage();
-                }
-            });
-        }
+<!-- Delete confirm modal -->
+<div class="modal" id="deleteModal" onclick="closeModalClick(event)">
+  <div class="confirm-modal-content">
+    <div style="font-size:36px;margin-bottom:12px">🗑️</div>
+    <h3>حذف المحادثة؟</h3>
+    <p>هذه العملية لا يمكن التراجع عنها.</p>
+    <div class="confirm-btns">
+      <button class="confirm-btn-del" onclick="confirmDelete()">حذف</button>
+      <button class="confirm-btn-cancel" onclick="document.getElementById('deleteModal').classList.remove('open')">إلغاء</button>
+    </div>
+  </div>
+</div>
 
-        // ─── Sidebar ────────────────────────────────────
-        function toggleSidebar() {
-            document.getElementById('sidebar').classList.toggle('open');
-        }
+<!-- ═══════════════════════════════════════════
+   JAVASCRIPT
+═══════════════════════════════════════════ -->
+<script>
+// ─── State ────────────────────────────────────────────────────
+let currentChatId = localStorage.getItem('currentChatId') || Date.now().toString();
+let chats = {};
+let dbChats = [];
+let currentFile = null;
+let currentMode = localStorage.getItem('mode') || 'fast';
+let isSending = false;
+let pendingDeleteId = null;
 
-        // ─── Chat Management ────────────────────────────
-        function newChat() {
-            currentChatId = 'chat_' + Date.now();
-            history = [];
-            document.getElementById('messages').innerHTML = `
-                <div style="text-align:center;color:var(--muted);margin-top:20vh;">
-                    <h2>⚡ Wadi</h2><p>اسأل أي شيء... أنا هنا</p>
-                </div>`;
-            document.querySelectorAll('.chat-item').forEach(c => c.classList.remove('active'));
-        }
+// ─── Init ─────────────────────────────────────────────────────
+async function init() {
+  generateStars();
+  try { chats = JSON.parse(localStorage.getItem('chats') || '{}'); } catch(e) { chats = {}; }
+  setMode(currentMode, false);
+  loadTheme();
+  renderChat();
+  await loadDbChats();
+}
 
-        async function loadChats() {
-            try {
-                const res  = await fetch('/api/chats');
-                const data = await res.json();
-                const list = document.getElementById('chatList');
-                list.innerHTML = '';
-                (data.chats || []).forEach(chat => {
-                    const item = document.createElement('div');
-                    item.className = 'chat-item';
-                    item.dataset.id = chat.chat_id;
-                    const title = (chat.user_message || 'محادثة').substring(0, 30);
-                    item.innerHTML = `
-                        <span onclick="loadChat('${chat.chat_id}')" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${title}</span>
-                        <button class="delete-chat" onclick="deleteChat('${chat.chat_id}', event)">🗑️</button>`;
-                    list.appendChild(item);
-                });
-            } catch (e) {
-                console.error('loadChats error', e);
-            }
-        }
+// ─── Stars ────────────────────────────────────────────────────
+function generateStars() {
+  const c = document.getElementById('stars');
+  for (let i = 0; i < 65; i++) {
+    const s = document.createElement('div');
+    s.className = 'star';
+    const size = Math.random() * 2.5 + 0.5;
+    s.style.cssText = `width:${size}px;height:${size}px;left:${Math.random()*100}%;top:${Math.random()*100}%;--d:${(Math.random()*4+2).toFixed(1)}s;--op:${(Math.random()*0.5+0.2).toFixed(2)};animation-delay:${(Math.random()*5).toFixed(1)}s`;
+    c.appendChild(s);
+  }
+}
 
-        async function loadChat(chatId) {
-            currentChatId = chatId;
-            history = [];
-            document.querySelectorAll('.chat-item').forEach(c => {
-                c.classList.toggle('active', c.dataset.id === chatId);
-            });
-            try {
-                const res  = await fetch('/api/chat/' + chatId);
-                const data = await res.json();
-                const box  = document.getElementById('messages');
-                box.innerHTML = '';
-                (data.messages || []).forEach(m => {
-                    appendMessage(m.user_message, 'user');
-                    appendMessage(m.ai_response,  'ai', true);
-                    history.push({ user: m.user_message, ai: m.ai_response, rawAi: m.raw_ai });
-                });
-                box.scrollTop = box.scrollHeight;
-            } catch (e) {
-                console.error('loadChat error', e);
-            }
-        }
+// ─── Toast ────────────────────────────────────────────────────
+function showToast(msg, type = '') {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show ' + type;
+  setTimeout(() => t.className = 'toast', 3200);
+}
 
-        async function deleteChat(chatId, event) {
-            event.stopPropagation();
-            if (!confirm('حذف هذه المحادثة؟')) return;
-            await fetch('/api/chat/' + chatId, { method: 'DELETE' });
-            if (currentChatId === chatId) newChat();
-            loadChats();
-        }
+// ─── Mode ─────────────────────────────────────────────────────
+function setMode(m, save = true) {
+  currentMode = m;
+  if (save) localStorage.setItem('mode', m);
+  document.querySelectorAll('.mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
+}
 
-        // ─── Send Message ───────────────────────────────
-        async function sendMessage() {
-            const input = document.getElementById('messageInput');
-            const msg   = input.value.trim();
-            if (!msg && !selectedFile) return;
-            if (!currentChatId) currentChatId = 'chat_' + Date.now();
+// ─── DB Chats ─────────────────────────────────────────────────
+async function loadDbChats() {
+  try {
+    const r = await fetch('/api/chats');
+    if (!r.ok) throw new Error('خطأ');
+    const data = await r.json();
+    dbChats = data.chats || [];
+    renderChatList();
+  } catch(e) {
+    renderChatListLocal();
+  }
+}
 
-            appendMessage(msg || '📎 ملف', 'user');
-            input.value = '';
-            input.style.height = 'auto';
+function renderChatList() {
+  const l = document.getElementById('chatList');
+  l.innerHTML = '';
+  if (dbChats.length === 0) {
+    l.innerHTML = '<div style="color:var(--text-dim);font-size:13px;text-align:center;padding:24px 10px">لا توجد محادثات سابقة<br><span style="font-size:22px;display:block;margin-top:10px">💬</span></div>';
+    return;
+  }
+  dbChats.forEach(chat => {
+    const d = document.createElement('div');
+    d.className = 'chat-item' + (chat.chat_id === currentChatId ? ' active' : '');
 
-            const btn    = document.getElementById('sendBtn');
-            const loader = document.getElementById('loader');
-            btn.disabled = true;
-            loader.classList.add('active');
+    const icon = document.createElement('span');
+    icon.className = 'chat-item-icon';
+    icon.textContent = '💬';
 
-            // Placeholder for streaming
-            const aiDiv = appendMessage('', 'ai', true);
-            let fullText = '';
+    const text = document.createElement('span');
+    text.className = 'chat-item-text';
+    text.textContent = (chat.user_message || 'محادثة').substring(0, 30);
 
-            try {
-                const formData = new FormData();
-                formData.append('message',  msg);
-                formData.append('mode',     currentMode);
-                formData.append('chat_id',  currentChatId);
-                formData.append('history',  JSON.stringify(history));
-                if (selectedFile) formData.append('file', selectedFile);
+    const delBtn = document.createElement('button');
+    delBtn.className = 'chat-item-delete';
+    delBtn.innerHTML = '<i class="fa-solid fa-trash-can"></i>';
+    delBtn.title = 'حذف';
+    delBtn.onclick = (e) => {
+      e.stopPropagation();
+      askDeleteChat(chat.chat_id);
+    };
 
-                const resp = await fetch('/api/chat/stream', { method: 'POST', body: formData });
-                const reader = resp.body.getReader();
-                const decoder = new TextDecoder();
+    d.appendChild(icon);
+    d.appendChild(text);
+    d.appendChild(delBtn);
+    d.onclick = () => switchChat(chat.chat_id);
+    l.appendChild(d);
+  });
+}
 
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    const chunk = decoder.decode(value, { stream: true });
-                    chunk.split('\\n').forEach(line => {
-                        if (line.startsWith('data: ')) {
-                            const payload = line.slice(6).trim();
-                            if (payload === '[DONE]') return;
-                            try {
-                                const parsed = JSON.parse(payload);
-                                if (parsed.content) {
-                                    fullText += parsed.content;
-                                    // Incremental render with simple client-side markdown
-                                    aiDiv.innerHTML = simpleMarkdown(fullText);
-                                    document.getElementById('messages').scrollTop = 999999;
-                                }
-                                // FIX #1: Server sends full mistune-rendered HTML after save —
-                                // replace the simple render with the authoritative version.
-                                if (parsed.formatted) {
-                                    aiDiv.innerHTML = parsed.formatted;
-                                    document.getElementById('messages').scrollTop = 999999;
-                                }
-                                // FIX #5: Show uploaded image immediately in the chat bubble.
-                                if (parsed.image_url) {
-                                    const img = document.createElement('img');
-                                    img.src = parsed.image_url;
-                                    img.style.cssText = 'max-width:200px;border-radius:12px;margin-top:8px;cursor:pointer;';
-                                    img.onclick = () => {
-                                        document.getElementById('modalImg').src = img.src;
-                                        document.getElementById('imgModal').classList.add('show');
-                                    };
-                                    aiDiv.appendChild(img);
-                                }
-                                if (parsed.error) {
-                                    aiDiv.innerHTML = '<span style="color:#ff5252;">حدث خطأ: ' + parsed.error + '</span>';
-                                }
-                            } catch (_) {}
-                        }
-                    });
-                }
+function renderChatListLocal() {
+  const l = document.getElementById('chatList');
+  l.innerHTML = '';
+  const ids = Object.keys(chats).reverse();
+  if (ids.length === 0) {
+    l.innerHTML = '<div style="color:var(--text-dim);font-size:13px;text-align:center;padding:24px 10px">لا توجد محادثات سابقة</div>';
+    return;
+  }
+  ids.forEach(id => {
+    const c = chats[id];
+    const t = c[0]?.user || 'محادثة جديدة';
+    const d = document.createElement('div');
+    d.className = 'chat-item' + (id === currentChatId ? ' active' : '');
 
-                history.push({ user: msg, ai: aiDiv.innerHTML, rawAi: fullText });
-                loadChats();
-            } catch (e) {
-                aiDiv.innerHTML = '<span style="color:#ff5252;">حدث خطأ في الاتصال. حاول مجدداً.</span>';
-            } finally {
-                btn.disabled = false;
-                loader.classList.remove('active');
-                selectedFile = null;
-            }
-        }
+    const icon = document.createElement('span');
+    icon.className = 'chat-item-icon'; icon.textContent = '💬';
 
-        // ─── Minimal client-side markdown renderer ───────
-        function simpleMarkdown(text) {
-            return text
-                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-                .replace(/[*][*](.+?)[*][*]/g, '<strong>$1</strong>')
-                .replace(/[*](.+?)[*]/g,       '<em>$1</em>')
-                .replace(/`([^`]+)`/g,          '<code>$1</code>')
-                .replace(/\n/g,                 '<br>');
-        }
+    const text = document.createElement('span');
+    text.className = 'chat-item-text'; text.textContent = t.substring(0, 30);
 
-        // ─── Append Message Helper ───────────────────────
-        function appendMessage(content, role, isHtml = false) {
-            const box = document.getElementById('messages');
-            // Remove welcome placeholder
-            const placeholder = box.querySelector('div[style*="margin-top:20vh"]');
-            if (placeholder) placeholder.remove();
+    const delBtn = document.createElement('button');
+    delBtn.className = 'chat-item-delete';
+    delBtn.innerHTML = '<i class="fa-solid fa-trash-can"></i>';
+    delBtn.title = 'حذف';
+    delBtn.onclick = (e) => { e.stopPropagation(); askDeleteChat(id); };
 
-            const div = document.createElement('div');
-            div.className = 'message ' + role;
-            if (isHtml) div.innerHTML = content;
-            else        div.textContent = content;
-            box.appendChild(div);
-            box.scrollTop = box.scrollHeight;
-            return div;
-        }
+    d.appendChild(icon); d.appendChild(text); d.appendChild(delBtn);
+    d.onclick = () => switchChat(id);
+    l.appendChild(d);
+  });
+}
 
-        // ─── File Handling ───────────────────────────────
-        function toggleFileMenu() {
-            document.getElementById('fileMenu').classList.toggle('show');
-        }
+// ─── Delete Chat ──────────────────────────────────────────────
+function askDeleteChat(chatId) {
+  pendingDeleteId = chatId;
+  document.getElementById('deleteModal').classList.add('open');
+}
 
-        function triggerFileInput(type) {
-            document.getElementById('fileMenu').classList.remove('show');
-            const map = { image: 'fileImage', file: 'fileFile', pdf: 'filePdf' };
-            document.getElementById(map[type]).click();
-        }
+async function confirmDelete() {
+  if (!pendingDeleteId) return;
+  const id = pendingDeleteId;
+  document.getElementById('deleteModal').classList.remove('open');
+  pendingDeleteId = null;
 
-        function handleFileSelect(input, type) {
-            if (input.files[0]) {
-                selectedFile = input.files[0];
-                document.getElementById('messageInput').placeholder = '📎 ' + selectedFile.name + ' — اكتب رسالتك...';
-            }
-        }
+  // Remove from local
+  delete chats[id];
+  saveChats();
+  if (currentChatId === id) {
+    currentChatId = Date.now().toString();
+    chats[currentChatId] = [];
+    localStorage.setItem('currentChatId', currentChatId);
+    renderChat();
+  }
 
-        // ─── Share Chat ──────────────────────────────────
-        async function shareChat() {
-            if (!currentChatId) { alert('افتح محادثة أولاً'); return; }
-            try {
-                const fd = new FormData();
-                fd.append('csrf_token', csrfToken);
-                const res  = await fetch('/api/chat/share/' + currentChatId, { method: 'POST', body: fd });
-                const data = await res.json();
-                if (data.share_url) {
-                    await navigator.clipboard.writeText(data.share_url);
-                    alert('تم نسخ رابط المشاركة ✅');
-                }
-            } catch (e) {
-                alert('حدث خطأ أثناء المشاركة');
-            }
-        }
+  // Remove from DB
+  try {
+    await fetch(`/api/chat/${id}`, { method: 'DELETE' });
+  } catch(e) {}
 
-        // ─── Delete Account ──────────────────────────────
-        function deleteAccount() {
-            document.getElementById('deleteModal').classList.add('show');
-        }
+  await loadDbChats();
+  showToast('🗑️ تم حذف المحادثة', 'success');
+}
 
-        async function confirmDelete() {
-            const pass = document.getElementById('deletePassword').value;
-            if (!pass) { alert('أدخل كلمة المرور'); return; }
-            const fd = new FormData();
-            fd.append('password',   pass);
-            fd.append('csrf_token', csrfToken);
-            const res  = await fetch('/api/user/delete', { method: 'POST', body: fd });
-            const data = await res.json();
-            if (data.ok) window.location.href = '/login';
-            else alert(data.error || 'حدث خطأ');
-        }
+// ─── Load & Switch Chat ───────────────────────────────────────
+async function loadChatFromDb(chatId) {
+  try {
+    const r = await fetch(`/api/chat/${chatId}`);
+    if (!r.ok) throw new Error('خطأ');
+    const data = await r.json();
+    const messages = data.messages || [];
+    chats[chatId] = messages.map(m => ({
+      user: m.user_message, ai: m.ai_response,
+      rawAi: m.raw_ai, imageUrl: m.image_url, fileName: m.file_name
+    }));
+    saveChats();
+    return true;
+  } catch(e) { return false; }
+}
 
-        // ─── Close menus on outside click ───────────────
-        document.addEventListener('click', e => {
-            if (!e.target.closest('.attach-btn') && !e.target.closest('.file-menu')) {
-                document.getElementById('fileMenu').classList.remove('show');
-            }
-        });
-    </script>
+async function switchChat(id) {
+  currentChatId = id;
+  localStorage.setItem('currentChatId', id);
+  if (!chats[id] || chats[id].length === 0) {
+    renderLoading();
+    await loadChatFromDb(id);
+  }
+  renderChat(); renderChatList(); closeSidebar();
+}
+
+function renderLoading() {
+  document.getElementById('chatContainer').innerHTML = `
+    <div style="text-align:center;padding:70px;color:var(--text-dim)">
+      <div class="typing-indicator" style="justify-content:center">
+        <span></span><span></span><span></span>
+      </div>
+      <p style="margin-top:18px;font-size:14px">جاري تحميل المحادثة...</p>
+    </div>`;
+}
+
+function newChat() {
+  currentChatId = Date.now().toString();
+  chats[currentChatId] = [];
+  localStorage.setItem('currentChatId', currentChatId);
+  saveChats(); renderChat(); renderChatList(); closeSidebar();
+}
+
+// ─── Render Chat ──────────────────────────────────────────────
+function renderChat() {
+  const c = document.getElementById('chatContainer');
+  const h = chats[currentChatId] || [];
+  if (h.length === 0) {
+    c.innerHTML = `<div class="welcome" id="welcome">
+      <span class="welcome-icon">🌊</span>
+      <h2>مرحباً في <span style="background:linear-gradient(90deg,#00ff94,#00d2ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">Anas Wadi</span></h2>
+      <p>تم تطوير هذا الذكاء الاصطناعي بيد المهندس <strong>Anas Wadi</strong> من ليبيا 🇱🇾</p>
+      <p style="margin-top:6px">كيف يمكنني مساعدتك اليوم؟</p>
+      <div class="welcome-cards">
+        <div class="welcome-card" onclick="useTemplate('ارسم صورة: ')"><div class="card-icon">🎨</div><div class="card-title">رسم صورة</div><div class="card-desc">توليد صور فائقة الجودة</div></div>
+        <div class="welcome-card" onclick="useTemplate('اشرحلي ')"><div class="card-icon">💡</div><div class="card-title">شرح وتحليل</div><div class="card-desc">أشرح أي موضوع تريده</div></div>
+        <div class="welcome-card" onclick="setMode('coder');useTemplate('اصنعلي مشروع ')"><div class="card-icon">💻</div><div class="card-title">مشروع كامل</div><div class="card-desc">موقع، API، بوت — جاهز للتشغيل</div></div>
+        <div class="welcome-card" onclick="document.getElementById('fileInput').click()"><div class="card-icon">📄</div><div class="card-title">تحليل ملف</div><div class="card-desc">PDF أو صورة</div></div>
+      </div>
+    </div>`;
+    return;
+  }
+  c.innerHTML = '';
+  h.forEach((m, i) => {
+    const isTyping = m.ai === '__typing__';
+    let userContent = escHtml(m.user);
+    if (m.fileName) userContent = `<div class="file-badge"><i class="fa-solid fa-file"></i> ${escHtml(m.fileName)}</div><br>${userContent}`;
+    let aiContent = isTyping
+      ? `<div class="typing-indicator"><span></span><span></span><span></span></div>`
+      : (m.ai || '');
+    let imgHtml = '';
+    if (m.imageUrl) imgHtml = `<br><img class="generated-img" src="${escHtml(m.imageUrl)}" alt="صورة مولدة" loading="lazy" onclick="window.open(this.src,'_blank')">`;
+    c.innerHTML += `
+      <div class="message">
+        <div class="user-msg">${userContent}</div>
+      </div>
+      <div class="message">
+        <div class="ai-msg" id="msg-${i}">${aiContent}${imgHtml}</div>
+        ${isTyping ? '' : `<div class="msg-actions">
+          <button class="msg-btn" onclick="copyText(${JSON.stringify(m.rawAi || m.ai)})"><i class="fa-solid fa-copy"></i> نسخ الكل</button>
+          <button class="msg-btn" onclick="regenerate(${i})"><i class="fa-solid fa-rotate"></i> إعادة</button>
+        </div>`}
+      </div>`;
+  });
+  // Add code block headers with copy buttons
+  requestAnimationFrame(() => {
+    document.querySelectorAll('.ai-msg pre').forEach(pre => {
+      if (pre.querySelector('.code-header')) return; // already processed
+      const code = pre.querySelector('code');
+      const lang = (pre.dataset.lang || code?.className?.replace('lang-','') || 'code').toLowerCase();
+      const header = document.createElement('div');
+      header.className = 'code-header';
+      header.innerHTML = `<span class="code-lang-badge">${lang}</span>
+        <button class="copy-code-btn" onclick="copyCodeBlock(this)">
+          <i class="fa-regular fa-copy"></i> نسخ
+        </button>`;
+      pre.insertBefore(header, pre.firstChild);
+    });
+    window.scrollTo(0, document.body.scrollHeight);
+  });
+}
+
+function copyCodeBlock(btn) {
+  const pre = btn.closest('pre');
+  const code = pre.querySelector('code');
+  const text = code ? code.innerText : '';
+  navigator.clipboard.writeText(text).then(() => {
+    btn.classList.add('copied');
+    btn.innerHTML = '<i class="fa-solid fa-check"></i> تم!';
+    setTimeout(() => {
+      btn.classList.remove('copied');
+      btn.innerHTML = '<i class="fa-regular fa-copy"></i> نسخ';
+    }, 2000);
+  }).catch(() => showToast('⚠️ تعذر النسخ', 'error'));
+}
+
+function escHtml(t) {
+  if (!t) return '';
+  const d = document.createElement('div');
+  d.textContent = t;
+  return d.innerHTML;
+}
+
+// ─── Send Message ─────────────────────────────────────────────
+async function sendMessage() {
+  if (isSending) return;
+  const inp = document.getElementById('messageInput');
+  const t = inp.value.trim();
+  if (!t && !currentFile) return;
+  isSending = true;
+  document.getElementById('sendBtn').disabled = true;
+  inp.value = ''; inp.style.height = '52px';
+  if (!chats[currentChatId]) chats[currentChatId] = [];
+  const c = chats[currentChatId];
+  const fName = currentFile ? currentFile.name : null;
+  c.push({ user: t || 'حلل الملف', ai: '__typing__', fileName: fName });
+  saveChats(); renderChat();
+  const fd = new FormData();
+  fd.append('message', t);
+  fd.append('mode', currentMode);
+  fd.append('chat_id', currentChatId);
+  fd.append('history', JSON.stringify(c.slice(0, -1)));
+  if (currentFile) fd.append('file', currentFile);
+  try {
+    const r = await fetch('/api/chat', { method: 'POST', body: fd });
+    if (!r.ok) throw new Error('خطأ في الخادم');
+    const d = await r.json();
+    if (d.error) { showToast(d.error, 'error'); c.pop(); }
+    else {
+      c[c.length-1].ai = d.response;
+      c[c.length-1].rawAi = d.rawResponse || d.response;
+      if (d.imageUrl) c[c.length-1].imageUrl = d.imageUrl;
+      await loadDbChats();
+    }
+  } catch (err) {
+    c[c.length-1].ai = '⚠️ صار خطأ: ' + err.message;
+    showToast('تعذر الإرسال', 'error');
+  } finally {
+    currentFile = null;
+    document.getElementById('filePreview').classList.add('hidden');
+    document.getElementById('fileInput').value = '';
+    saveChats(); renderChat();
+    isSending = false;
+    document.getElementById('sendBtn').disabled = false;
+  }
+}
+
+// ─── Regenerate ───────────────────────────────────────────────
+async function regenerate(i) {
+  if (isSending) return;
+  isSending = true;
+  const c = chats[currentChatId];
+  const u = c[i].user;
+  c[i].ai = '__typing__'; renderChat();
+  const fd = new FormData();
+  fd.append('message', u); fd.append('mode', currentMode);
+  fd.append('chat_id', currentChatId);
+  fd.append('history', JSON.stringify(c.slice(0, i)));
+  try {
+    const r = await fetch('/api/chat', { method: 'POST', body: fd });
+    const d = await r.json();
+    c[i].ai = d.response; c[i].rawAi = d.rawResponse || d.response;
+    if (d.imageUrl) c[i].imageUrl = d.imageUrl; else delete c[i].imageUrl;
+  } catch (err) {
+    c[i].ai = '⚠️ صار خطأ: ' + err.message;
+  } finally {
+    saveChats(); renderChat(); isSending = false;
+  }
+}
+
+// ─── File ─────────────────────────────────────────────────────
+function handleFile(inp) {
+  if (inp.files[0]) {
+    currentFile = inp.files[0];
+    document.getElementById('fileName').textContent = currentFile.name;
+    document.getElementById('filePreview').classList.remove('hidden');
+  }
+}
+function removeFile() {
+  currentFile = null;
+  document.getElementById('fileInput').value = '';
+  document.getElementById('filePreview').classList.add('hidden');
+}
+
+// ─── Helpers ──────────────────────────────────────────────────
+function useTemplate(t) {
+  const inp = document.getElementById('messageInput');
+  inp.value = t; inp.focus(); autoResize(inp);
+}
+function copyText(t) {
+  const tmp = document.createElement('div');
+  tmp.innerHTML = t;
+  navigator.clipboard.writeText(tmp.textContent || t);
+  showToast('✅ تم النسخ', 'success');
+}
+function saveChats() {
+  try { localStorage.setItem('chats', JSON.stringify(chats)); }
+  catch(e) { showToast('⚠️ الذاكرة ممتلئة! احذف محادثات قديمة', 'error'); }
+}
+function toggleSidebar() {
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('sidebarOverlay').classList.toggle('open');
+}
+function closeSidebar() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebarOverlay').classList.remove('open');
+}
+function toggleTheme() {
+  const h = document.documentElement;
+  const n = h.dataset.theme === 'dark' ? 'light' : 'dark';
+  h.dataset.theme = n; localStorage.setItem('theme', n);
+  const icon = n === 'dark' ? 'fa-moon' : 'fa-sun';
+  document.getElementById('themeBtn').innerHTML = `<i class="fa-solid ${icon}"></i>`;
+  document.getElementById('sidebarThemeIcon').className = `fa-solid ${icon}`;
+}
+function loadTheme() {
+  const t = localStorage.getItem('theme') || 'dark';
+  document.documentElement.dataset.theme = t;
+  const icon = t === 'dark' ? 'fa-moon' : 'fa-sun';
+  document.getElementById('themeBtn').innerHTML = `<i class="fa-solid ${icon}"></i>`;
+  document.getElementById('sidebarThemeIcon').className = `fa-solid ${icon}`;
+}
+function handleKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+}
+function autoResize(el) {
+  el.style.height = '52px';
+  el.style.height = Math.min(el.scrollHeight, 130) + 'px';
+}
+function showSupport() { document.getElementById('supportModal').classList.add('open'); }
+function closeModalClick(e) { if (e.target.classList.contains('modal')) e.target.classList.remove('open'); }
+
+// ─── Boot ─────────────────────────────────────────────────────
+init();
+</script>
 </body>
 </html>
 '''
