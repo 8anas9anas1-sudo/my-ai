@@ -192,14 +192,14 @@ def init_db_tables():
         return
     try:
         with conn.cursor() as cur:
+            # 1. إنشاء الجداول الأساسية إذا لم تكن موجودة
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     id SERIAL PRIMARY KEY,
                     email TEXT UNIQUE NOT NULL,
                     password_hash TEXT NOT NULL,
                     name TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    onboarding_seen BOOLEAN DEFAULT FALSE
+                    created_at TIMESTAMP DEFAULT NOW()
                 );
                 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
             """)
@@ -215,15 +215,30 @@ def init_db_tables():
                     mode TEXT DEFAULT 'fast',
                     image_url TEXT,
                     file_name TEXT,
-                    share_token TEXT UNIQUE,
                     created_at TIMESTAMP DEFAULT NOW()
                 );
                 CREATE INDEX IF NOT EXISTS idx_chat_id ON conversations(chat_id);
                 CREATE INDEX IF NOT EXISTS idx_user_email ON conversations(user_email);
-                CREATE INDEX IF NOT EXISTS idx_share_token ON conversations(share_token);
             """)
+            
+            # 2. إضافة الأعمدة الجديدة إذا كانت مفقودة (ترقية الجداول)
+            cur.execute("""
+                DO $$ 
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                   WHERE table_name='users' AND column_name='onboarding_seen') THEN
+                        ALTER TABLE users ADD COLUMN onboarding_seen BOOLEAN DEFAULT FALSE;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                   WHERE table_name='conversations' AND column_name='share_token') THEN
+                        ALTER TABLE conversations ADD COLUMN share_token TEXT UNIQUE;
+                        CREATE INDEX IF NOT EXISTS idx_share_token ON conversations(share_token);
+                    END IF;
+                END $$;
+            """)
+            
             conn.commit()
-            app.logger.info("Database tables ensured")
+            app.logger.info("Database tables and migrations ensured")
     except Exception as e:
         app.logger.error(f"Database init error: {str(e)}")
     finally:
