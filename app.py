@@ -192,14 +192,14 @@ def init_db_tables():
         return
     try:
         with conn.cursor() as cur:
-            # 1. إنشاء الجداول الأساسية إذا لم تكن موجودة
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     id SERIAL PRIMARY KEY,
                     email TEXT UNIQUE NOT NULL,
                     password_hash TEXT NOT NULL,
                     name TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT NOW()
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    onboarding_seen BOOLEAN DEFAULT FALSE
                 );
                 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
             """)
@@ -215,30 +215,15 @@ def init_db_tables():
                     mode TEXT DEFAULT 'fast',
                     image_url TEXT,
                     file_name TEXT,
+                    share_token TEXT UNIQUE,
                     created_at TIMESTAMP DEFAULT NOW()
                 );
                 CREATE INDEX IF NOT EXISTS idx_chat_id ON conversations(chat_id);
                 CREATE INDEX IF NOT EXISTS idx_user_email ON conversations(user_email);
+                CREATE INDEX IF NOT EXISTS idx_share_token ON conversations(share_token);
             """)
-            
-            # 2. إضافة الأعمدة الجديدة إذا كانت مفقودة (ترقية الجداول)
-            cur.execute("""
-                DO $$ 
-                BEGIN
-                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                                   WHERE table_name='users' AND column_name='onboarding_seen') THEN
-                        ALTER TABLE users ADD COLUMN onboarding_seen BOOLEAN DEFAULT FALSE;
-                    END IF;
-                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                                   WHERE table_name='conversations' AND column_name='share_token') THEN
-                        ALTER TABLE conversations ADD COLUMN share_token TEXT UNIQUE;
-                        CREATE INDEX IF NOT EXISTS idx_share_token ON conversations(share_token);
-                    END IF;
-                END $$;
-            """)
-            
             conn.commit()
-            app.logger.info("Database tables and migrations ensured")
+            app.logger.info("Database tables ensured")
     except Exception as e:
         app.logger.error(f"Database init error: {str(e)}")
     finally:
@@ -250,15 +235,31 @@ with app.app_context():
 # ============================================
 # Security Helpers
 # ============================================
+
+# ─── دعم الترقية من SHA256 القديم إلى bcrypt ───
+# الإصدار القديم كان يشفر بـ hashlib.sha256(SALT + password)
+# الإصدار الجديد يستخدم bcrypt — نتعامل مع الاثنين أثناء الانتقال
+OLD_SALT = os.environ.get("PASSWORD_SALT", "anas-wadi-salt-2026")
+
+def _hash_old(password: str) -> str:
+    """تشفير SHA256 القديم — للقراءة فقط عند التحقق"""
+    return hashlib.sha256(f"{OLD_SALT}{password}".encode()).hexdigest()
+
 def hash_password(password: str) -> str:
-    """Hash password using bcrypt with configurable rounds."""
+    """تشفير bcrypt — يُستخدم لجميع الحسابات الجديدة وعند الترقية"""
     return bcrypt.hashpw(
         password.encode('utf-8'),
         bcrypt.gensalt(Config.BCRYPT_ROUNDS)
     ).decode('utf-8')
 
 def check_password(password: str, hashed: str) -> bool:
-    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+    """
+    يدعم bcrypt (يبدأ بـ $2b$) والتشفير القديم SHA256.
+    عند نجاح SHA256، تقوم verify_user بترقية التشفير إلى bcrypt تلقائياً.
+    """
+    if hashed.startswith('$2b$'):
+        return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+    return _hash_old(password) == hashed
 
 # ============================================
 # Prompt Injection Protection
@@ -326,6 +327,15 @@ def verify_user(email: str, password: str) -> Optional[Dict[str, Any]]:
             )
             user = cur.fetchone()
             if user and check_password(password, user['password_hash']):
+                # إذا كان التشفير قديماً (SHA256)، نُحدّثه إلى bcrypt عند أول تسجيل دخول ناجح
+                if not user['password_hash'].startswith('$2b$'):
+                    new_hash = hash_password(password)
+                    cur.execute(
+                        "UPDATE users SET password_hash = %s WHERE email = %s",
+                        (new_hash, email.lower().strip())
+                    )
+                    conn.commit()
+                    app.logger.info(f"Upgraded password hash to bcrypt for {email.lower().strip()}")
                 return {
                     'email': user['email'],
                     'name': user['name'],
