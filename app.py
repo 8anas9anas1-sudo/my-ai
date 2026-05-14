@@ -1138,6 +1138,8 @@ body::before {
   border-radius:10px; cursor:pointer; font-size:15px;
   transition:all 0.22s; display:flex; align-items:center; justify-content:center;
   position:relative; overflow:hidden; text-decoration:none; flex-shrink:0;
+  pointer-events:auto;
+  z-index:101;
 }
 .icon-btn::before {
   content:''; position:absolute; inset:0;
@@ -1158,17 +1160,22 @@ body::before {
   background:var(--sidebar-bg); backdrop-filter:blur(30px);
   border-left:1px solid var(--border);
   transition:right 0.36s cubic-bezier(0.4,0,0.2,1);
-  z-index:200; display:flex; flex-direction:column;
+  z-index:250; display:flex; flex-direction:column;
+  pointer-events:auto;
 }
 [data-theme="light"] .sidebar { box-shadow:-4px 0 30px rgba(0,0,0,0.08); }
 .sidebar.open { right:0; }
 
 .sidebar-overlay {
-  display:none; position:fixed; inset:0; z-index:199;
+  display:none; position:fixed; inset:0; z-index:150;
   background:rgba(0,0,0,0.5); backdrop-filter:blur(4px);
   transition:opacity 0.3s;
+  pointer-events:none;
 }
-.sidebar-overlay.open { display:block; }
+.sidebar-overlay.open {
+  display:block;
+  pointer-events:auto;
+}
 
 /* Sidebar user profile card */
 .sidebar-profile {
@@ -1268,6 +1275,9 @@ body::before {
   color:var(--text-dim); padding:7px 15px; border-radius:20px;
   font-size:12px; font-weight:600; white-space:nowrap; cursor:pointer;
   transition:all 0.22s; font-family:'Tajawal',sans-serif;
+  pointer-events:auto;
+  position:relative;
+  z-index:1;
 }
 .mode-btn:hover { border-color:var(--border-glow); color:var(--text); }
 .mode-btn.active {
@@ -1420,6 +1430,7 @@ body::before {
   position:sticky; bottom:0; z-index:10;
   background:var(--header-bg); backdrop-filter:blur(20px);
   border-top:1px solid var(--border); padding:10px 16px 14px;
+  pointer-events:auto;
 }
 
 .templates {
@@ -1777,6 +1788,10 @@ async function init() {
   loadTheme();
   renderChat();
   await loadDbChats();
+  // Close sidebar on ESC key
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeSidebar();
+  });
 }
 
 // ─── Stars ────────────────────────────────────────────────────
@@ -2138,12 +2153,21 @@ function saveChats() {
   catch(e) { showToast('⚠️ الذاكرة ممتلئة! احذف محادثات قديمة', 'error'); }
 }
 function toggleSidebar() {
-  document.getElementById('sidebar').classList.toggle('open');
-  document.getElementById('sidebarOverlay').classList.toggle('open');
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('sidebarOverlay');
+  if (!sidebar || !overlay) return;
+  const isOpen = sidebar.classList.toggle('open');
+  overlay.classList.toggle('open', isOpen);
+  overlay.style.pointerEvents = isOpen ? 'auto' : 'none';
 }
 function closeSidebar() {
-  document.getElementById('sidebar').classList.remove('open');
-  document.getElementById('sidebarOverlay').classList.remove('open');
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('sidebarOverlay');
+  if (sidebar) sidebar.classList.remove('open');
+  if (overlay) {
+    overlay.classList.remove('open');
+    overlay.style.pointerEvents = 'none';
+  }
 }
 function toggleTheme() {
   const h = document.documentElement;
