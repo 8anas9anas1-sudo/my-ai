@@ -958,6 +958,7 @@ input::placeholder { color:rgba(232,234,246,0.35); }
 
   {% if mode == 'login' %}
   <form class="form" method="POST" action="/login">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="input-group">
       <i class="fa-solid fa-envelope"></i>
       <input type="email" name="email" placeholder="البريد الإلكتروني" required autofocus>
@@ -972,6 +973,7 @@ input::placeholder { color:rgba(232,234,246,0.35); }
   </form>
   {% else %}
   <form class="form" method="POST" action="/register">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="input-group">
       <i class="fa-solid fa-user"></i>
       <input type="text" name="name" placeholder="الاسم" required autofocus
