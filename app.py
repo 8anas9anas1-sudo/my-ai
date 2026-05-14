@@ -40,11 +40,11 @@ from werkzeug.utils import secure_filename
 class Config:
     # Flask
     SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "change-me-in-production-2026")
-    # Session: Redis
-    SESSION_TYPE = os.environ.get("SESSION_TYPE", "redis")
-    # FIX #1: لا نفتح اتصال Redis أثناء تحميل الكلاس — نؤجله حتى وقت الحاجة
-    # هذا يمنع فشل التطبيق كلياً إذا كان Redis غير متاح عند البدء
-    SESSION_REDIS = None  # سيُهيَّأ في init_redis() أدناه
+    # Session: filesystem (لا يحتاج Redis — متوافق مع Render المجاني مثل الملف القديم)
+    # لتفعيل Redis: ضع SESSION_TYPE=redis في متغيرات البيئة مع REDIS_URL
+    SESSION_TYPE = os.environ.get("SESSION_TYPE", "filesystem")
+    SESSION_FILE_DIR = os.environ.get("SESSION_FILE_DIR", "/tmp/flask_sessions")
+    SESSION_REDIS = None  # يُهيَّأ فقط إذا كان SESSION_TYPE=redis
     SESSION_PERMANENT = False
     SESSION_USE_SIGNER = True
     # Database
@@ -58,26 +58,28 @@ class Config:
     UPLOAD_FOLDER = os.environ.get("UPLOAD_FOLDER", "static/uploads")
     ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp', 'pdf', 'txt'}
     MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16 MB
-    # Rate Limiting
-    RATELIMIT_STORAGE_URL = os.environ.get("RATELIMIT_STORAGE_URL", "redis://localhost:6379/3")
+    # Rate Limiting — يستخدم الذاكرة إذا لم يكن Redis متاحاً
+    RATELIMIT_STORAGE_URL = os.environ.get("RATELIMIT_STORAGE_URL", "memory://")
     # Security
     BCRYPT_ROUNDS = 12
     # SSL mode for DB — set DB_SSL_MODE=disable if your DB doesn't support SSL
     DB_SSL_MODE = os.environ.get("DB_SSL_MODE", "require")
 
-# ─── Lazy Redis initializer ────────────────
-def init_redis() -> redis.Redis:
+# ─── Lazy Redis initializer (اختياري — يُستخدم فقط إذا SESSION_TYPE=redis) ───
+def init_redis() -> Optional[redis.Redis]:
     """
-    FIX #1: يُنشئ اتصال Redis عند الحاجة الأولى فقط (lazy init).
-    يمنع فشل التطبيق إذا كان Redis غير متاح عند تحميل الملف.
+    يُنشئ اتصال Redis فقط إذا كان SESSION_TYPE=redis.
+    على Render المجاني بدون Redis: SESSION_TYPE=filesystem يتجاوز هذه الدالة.
     """
+    if os.environ.get("SESSION_TYPE", "filesystem") != "redis":
+        return None
     if Config.SESSION_REDIS is None:
         Config.SESSION_REDIS = redis.from_url(
             os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
             socket_connect_timeout=5,
             socket_timeout=5,
             retry_on_timeout=True,
-            health_check_interval=30,  # فحص دوري كل 30 ثانية لتجنب إغلاق الاتصال من Redis
+            health_check_interval=30,
             decode_responses=False
         )
     return Config.SESSION_REDIS
@@ -86,8 +88,11 @@ def init_redis() -> redis.Redis:
 # Application Factory
 # ============================================
 app = Flask(__name__)
-# تهيئة Redis قبل ربط الـ config بـ Flask
-init_redis()
+# إنشاء مجلد الجلسات إذا كان النوع filesystem
+if os.environ.get("SESSION_TYPE", "filesystem") == "filesystem":
+    os.makedirs(os.environ.get("SESSION_FILE_DIR", "/tmp/flask_sessions"), exist_ok=True)
+else:
+    init_redis()
 app.config.from_object(Config)
 
 # ─── Rate limit key: IP للزوار، email للمستخدمين المسجلين ─────
@@ -237,8 +242,6 @@ with app.app_context():
 # ============================================
 
 # ─── دعم الترقية من SHA256 القديم إلى bcrypt ───
-# الإصدار القديم كان يشفر بـ hashlib.sha256(SALT + password)
-# الإصدار الجديد يستخدم bcrypt — نتعامل مع الاثنين أثناء الانتقال
 OLD_SALT = os.environ.get("PASSWORD_SALT", "anas-wadi-salt-2026")
 
 def _hash_old(password: str) -> str:
@@ -253,10 +256,7 @@ def hash_password(password: str) -> str:
     ).decode('utf-8')
 
 def check_password(password: str, hashed: str) -> bool:
-    """
-    يدعم bcrypt (يبدأ بـ $2b$) والتشفير القديم SHA256.
-    عند نجاح SHA256، تقوم verify_user بترقية التشفير إلى bcrypt تلقائياً.
-    """
+    """يدعم bcrypt ($2b$) والتشفير القديم SHA256 معاً"""
     if hashed.startswith('$2b$'):
         return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
     return _hash_old(password) == hashed
@@ -327,7 +327,7 @@ def verify_user(email: str, password: str) -> Optional[Dict[str, Any]]:
             )
             user = cur.fetchone()
             if user and check_password(password, user['password_hash']):
-                # إذا كان التشفير قديماً (SHA256)، نُحدّثه إلى bcrypt عند أول تسجيل دخول ناجح
+                # إذا كان التشفير قديماً (SHA256)، نُحدّثه إلى bcrypt تلقائياً
                 if not user['password_hash'].startswith('$2b$'):
                     new_hash = hash_password(password)
                     cur.execute(
