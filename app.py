@@ -44,7 +44,8 @@ class Config:
     SESSION_TYPE = os.environ.get("SESSION_TYPE", "filesystem")
     SESSION_FILE_DIR = os.environ.get("SESSION_FILE_DIR", "/tmp/flask_sessions")
     SESSION_REDIS = None  # يُهيَّأ فقط إذا كان SESSION_TYPE=redis
-    SESSION_PERMANENT = False
+    SESSION_PERMANENT = True
+    PERMANENT_SESSION_LIFETIME = 86400 * 30  # 30 يوم
     SESSION_USE_SIGNER = True
     # Database
     DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -780,6 +781,11 @@ def csrf_required(f):
 @app.context_processor
 def inject_csrf():
     return dict(csrf_token=generate_csrf_token())
+
+@app.before_request
+def ensure_csrf_token():
+    """يضمن وجود csrf_token في كل session — يُجدده إذا انتهى أو اختفى"""
+    generate_csrf_token()
 
 # ============================================
 # Security Headers
@@ -1762,7 +1768,33 @@ textarea::placeholder { color:var(--text-muted); }
 ═══════════════════════════════════════════ -->
 <script>
 // ─── State ────────────────────────────────────────────────────
-const csrfToken = '{{ csrf_token }}';  // CSRF token من الخادم
+let csrfToken = '{{ csrf_token }}';  // يتجدد تلقائياً عند انتهاء الـ session
+
+// تجديد CSRF token من الخادم إذا انتهت الـ session
+async function refreshCsrfToken() {
+  try {
+    const r = await fetch('/api/csrf-token');
+    if (r.ok) { const d = await r.json(); csrfToken = d.csrf_token; }
+  } catch(e) {}
+}
+
+// wrapper لكل fetch يجدد التوكن تلقائياً عند 403
+async function apiFetch(url, options = {}) {
+  let r = await fetch(url, options);
+  if (r.status === 403) {
+    await refreshCsrfToken();
+    // أعد المحاولة مع التوكن الجديد
+    if (options.body instanceof FormData) {
+      options.body.set('csrf_token', csrfToken);
+    }
+    if (options.headers) {
+      options.headers['X-CSRFToken'] = csrfToken;
+    }
+    r = await fetch(url, options);
+  }
+  return r;
+}
+
 let currentChatId = localStorage.getItem('currentChatId') || Date.now().toString();
 let chats = {};
 let dbChats = [];
@@ -2065,7 +2097,7 @@ async function sendMessage() {
   fd.append('history', JSON.stringify(c.slice(0, -1)));
   if (currentFile) fd.append('file', currentFile);
   try {
-    const r = await fetch('/api/chat', { method: 'POST', body: fd });
+    const r = await apiFetch('/api/chat', { method: 'POST', body: fd });
     if (!r.ok) throw new Error('خطأ في الخادم');
     const d = await r.json();
     if (d.error) { showToast(d.error, 'error'); c.pop(); }
@@ -2101,7 +2133,7 @@ async function regenerate(i) {
   fd.append('chat_id', currentChatId);
   fd.append('history', JSON.stringify(c.slice(0, i)));
   try {
-    const r = await fetch('/api/chat', { method: 'POST', body: fd });
+    const r = await apiFetch('/api/chat', { method: 'POST', body: fd });
     const d = await r.json();
     c[i].ai = d.response; c[i].rawAi = d.raw || d.response;
     if (d.image_url) c[i].imageUrl = d.image_url; else delete c[i].imageUrl;
@@ -2199,7 +2231,7 @@ async function sendMessageStream() {
   fd.append('history', JSON.stringify(c.slice(0, -1)));
   let accumulated = '';
   try {
-    const r = await fetch('/api/chat/stream', { method: 'POST', body: fd });
+    const r = await apiFetch('/api/chat/stream', { method: 'POST', body: fd });
     if (!r.ok || !r.body) throw new Error('no-stream');
     const reader = r.body.getReader();
     const decoder = new TextDecoder();
@@ -2259,7 +2291,7 @@ function finishOnboarding() {
 async function shareCurrentChat() {
   if (!currentChatId) return;
   try {
-    const r = await fetch(`/api/chat/${currentChatId}/share`, {
+    const r = await apiFetch(`/api/chat/${currentChatId}/share`, {
       method: 'POST',
       headers: { 'X-CSRFToken': csrfToken }
     });
@@ -2308,7 +2340,7 @@ async function confirmDeleteAccount() {
     const fd = new FormData();
     fd.append('csrf_token', csrfToken);
     fd.append('confirmation', 'DELETE');
-    const r = await fetch('/api/account/delete', { method: 'POST', body: fd });
+    const r = await apiFetch('/api/account/delete', { method: 'POST', body: fd });
     const d = await r.json();
     if (d.ok) { localStorage.clear(); showToast('✅ تم حذف الحساب', 'success'); setTimeout(() => location.href='/login', 1200); }
     else showToast(d.error || 'تعذر الحذف', 'error');
@@ -2537,7 +2569,6 @@ def api_delete_user():
 # ============================================
 @app.route("/api/chat/stream", methods=["POST"])
 @login_required
-@csrf_required  # CSRF مطلوب — يُمرَّر التوكن في X-CSRFToken header أو csrf_token field
 @limiter.limit("10/minute")
 def chat_stream():
     if not Config.GROQ_API_KEY:
@@ -2832,7 +2863,6 @@ def process_heavy_request(
 
 @app.route("/api/chat/async", methods=["POST"])
 @login_required
-@csrf_required  # FIX #5: إضافة حماية CSRF — كانت مفقودة في هذا المسار
 @limiter.limit("5/minute")
 def chat_async():
     """Submit a heavy request (thinker/coder) to Celery and return a task_id."""
@@ -2930,6 +2960,11 @@ def manifest():
         "background_color": "#050510",
         "icons":            []
     }), mimetype='application/manifest+json')
+
+@app.route("/api/csrf-token")
+def get_csrf_token():
+    """يُرجع CSRF token جديد — يُستخدم من JS عند انتهاء الـ session"""
+    return jsonify({"csrf_token": generate_csrf_token()})
 
 # ============================================
 # Health Check
