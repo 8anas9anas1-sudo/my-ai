@@ -169,6 +169,7 @@ def init_db_pool() -> ConnectionPool:
             conninfo=db_url,
             min_size=2,
             max_size=10,
+            open=True,
             kwargs={"row_factory": dict_row}
         )
     return db_pool
@@ -2291,14 +2292,14 @@ function finishOnboarding() {
 async function shareCurrentChat() {
   if (!currentChatId) return;
   try {
-    const r = await apiFetch(`/api/chat/${currentChatId}/share`, {
+    const r = await apiFetch(`/api/chat/share/${currentChatId}`, {
       method: 'POST',
       headers: { 'X-CSRFToken': csrfToken }
     });
     const d = await r.json();
-    if (d.ok && d.url) {
+    if (d.share_url) {
       const inp = document.getElementById('shareUrlInput');
-      if (inp) inp.value = d.url;
+      if (inp) inp.value = d.share_url;
       const m = document.getElementById('shareModal');
       if (m) m.classList.add('open');
     } else { showToast(d.error || 'تعذر إنشاء الرابط', 'error'); }
@@ -2331,16 +2332,19 @@ function registerSW() {
 function showDeleteAccount() {
   closeSidebar();
   const m = document.getElementById('deleteAccountModal');
-  if (m) { m.classList.add('open'); document.getElementById('deleteConfirm').value = ''; }
+  if (m) { m.classList.add('open'); document.getElementById('deleteConfirm').value = ''; const p = document.getElementById('deletePassword'); if(p) p.value=''; }
 }
 async function confirmDeleteAccount() {
   const val = document.getElementById('deleteConfirm').value.trim();
   if (val !== 'DELETE') { showToast('اكتب DELETE للتأكيد', 'error'); return; }
+  const pwd = (document.getElementById('deletePassword')||{}).value || '';
+  if (!pwd) { showToast('أدخل كلمة المرور', 'error'); return; }
   try {
     const fd = new FormData();
     fd.append('csrf_token', csrfToken);
+    fd.append('password', pwd);
     fd.append('confirmation', 'DELETE');
-    const r = await apiFetch('/api/account/delete', { method: 'POST', body: fd });
+    const r = await apiFetch('/api/user/delete', { method: 'POST', body: fd });
     const d = await r.json();
     if (d.ok) { localStorage.clear(); showToast('✅ تم حذف الحساب', 'success'); setTimeout(() => location.href='/login', 1200); }
     else showToast(d.error || 'تعذر الحذف', 'error');
@@ -2397,6 +2401,9 @@ window.addEventListener('load', () => { setupConnection(); registerSW(); checkOn
     <div style="font-size:36px;margin-bottom:12px">⚠️</div>
     <h3>حذف الحساب نهائياً</h3>
     <p>سيتم حذف حسابك وجميع محادثاتك بشكل لا يمكن التراجع عنه.</p>
+    <p style="margin-bottom:8px">أدخل كلمة المرور للتأكيد:</p>
+    <input id="deletePassword" type="password" placeholder="كلمة المرور"
+      style="width:100%;background:var(--surface2);border:1px solid rgba(255,80,80,0.4);color:var(--text);border-radius:10px;padding:10px 14px;font-size:14px;margin-bottom:10px;font-family:'Tajawal',sans-serif">
     <p style="margin-bottom:14px">اكتب <strong style="color:#ff6b6b">DELETE</strong> للتأكيد:</p>
     <input id="deleteConfirm" type="text" placeholder="DELETE"
       style="width:100%;background:var(--surface2);border:1px solid rgba(255,80,80,0.4);color:var(--text);border-radius:10px;padding:10px 14px;font-size:14px;margin-bottom:16px;text-align:center;letter-spacing:3px;font-family:'Tajawal',sans-serif">
@@ -2989,14 +2996,17 @@ def health_check():
         status["status"] = "degraded"
         http_status = 503
 
-    # فحص Redis
+    # فحص Redis (اختياري — فقط عند تفعيله)
     try:
         r = init_redis()
-        r.ping()
+        if r is not None:
+            r.ping()
+        else:
+            status["redis"] = "not configured"
     except Exception as e:
         status["redis"] = f"error: {str(e)}"
-        status["status"] = "degraded"
-        http_status = 503
+        # لا نضع degraded لأن Redis اختياري في هذا الإعداد
+        # status["status"] = "degraded"
 
     return jsonify(status), http_status
 
