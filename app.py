@@ -1016,7 +1016,6 @@ HTML = '''
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#050510">
-<meta name="csrf-token" content="{{ csrf_token }}">
 <link rel="manifest" href="/manifest.json">
 <title>✨ Anas Wadi ✨</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1138,8 +1137,6 @@ body::before {
   border-radius:10px; cursor:pointer; font-size:15px;
   transition:all 0.22s; display:flex; align-items:center; justify-content:center;
   position:relative; overflow:hidden; text-decoration:none; flex-shrink:0;
-  pointer-events:auto;
-  z-index:101;
 }
 .icon-btn::before {
   content:''; position:absolute; inset:0;
@@ -1160,22 +1157,17 @@ body::before {
   background:var(--sidebar-bg); backdrop-filter:blur(30px);
   border-left:1px solid var(--border);
   transition:right 0.36s cubic-bezier(0.4,0,0.2,1);
-  z-index:250; display:flex; flex-direction:column;
-  pointer-events:auto;
+  z-index:200; display:flex; flex-direction:column;
 }
 [data-theme="light"] .sidebar { box-shadow:-4px 0 30px rgba(0,0,0,0.08); }
 .sidebar.open { right:0; }
 
 .sidebar-overlay {
-  display:none; position:fixed; inset:0; z-index:150;
+  display:none; position:fixed; inset:0; z-index:199;
   background:rgba(0,0,0,0.5); backdrop-filter:blur(4px);
   transition:opacity 0.3s;
-  pointer-events:none;
 }
-.sidebar-overlay.open {
-  display:block;
-  pointer-events:auto;
-}
+.sidebar-overlay.open { display:block; }
 
 /* Sidebar user profile card */
 .sidebar-profile {
@@ -1275,9 +1267,6 @@ body::before {
   color:var(--text-dim); padding:7px 15px; border-radius:20px;
   font-size:12px; font-weight:600; white-space:nowrap; cursor:pointer;
   transition:all 0.22s; font-family:'Tajawal',sans-serif;
-  pointer-events:auto;
-  position:relative;
-  z-index:1;
 }
 .mode-btn:hover { border-color:var(--border-glow); color:var(--text); }
 .mode-btn.active {
@@ -1430,7 +1419,6 @@ body::before {
   position:sticky; bottom:0; z-index:10;
   background:var(--header-bg); backdrop-filter:blur(20px);
   border-top:1px solid var(--border); padding:10px 16px 14px;
-  pointer-events:auto;
 }
 
 .templates {
@@ -1623,13 +1611,15 @@ textarea::placeholder { color:var(--text-muted); }
       <i class="fa-solid fa-heart" style="color:#ff6b6b"></i> دعم
     </button>
   </div>
+  <div style="padding:8px 14px 6px">
+    <a href="/logout" style="display:flex;align-items:center;gap:8px;width:100%;padding:11px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:12px;color:var(--text);text-decoration:none;font-size:13px;font-weight:600;transition:background 0.2s">
+      <i class="fa-solid fa-right-from-bracket"></i> تسجيل الخروج
+    </a>
+  </div>
   <div style="padding:0 14px 14px">
-    <button class="sidebar-footer-btn" onclick="showDeleteAccount()" style="width:100%;color:#ff6b6b;border-color:rgba(255,80,80,0.3);margin-bottom:8px">
+    <button onclick="showDeleteAccount()" style="display:flex;align-items:center;gap:8px;width:100%;padding:11px 16px;background:rgba(255,80,80,0.08);border:1px solid rgba(255,80,80,0.25);border-radius:12px;color:#ff6b6b;font-size:13px;font-weight:600;cursor:pointer;transition:background 0.2s;font-family:'Tajawal',sans-serif">
       <i class="fa-solid fa-trash"></i> حذف الحساب
     </button>
-    <a href="/logout" class="sidebar-footer-btn" style="text-decoration:none;color:inherit;display:block;text-align:center;width:100%">
-      <i class="fa-solid fa-right-from-bracket"></i> خروج
-    </a>
   </div>
 </div>
 
@@ -1730,7 +1720,7 @@ textarea::placeholder { color:var(--text-muted); }
         onkeydown="handleKey(event)"
         oninput="autoResize(this)"></textarea>
     </div>
-    <button class="send-btn" id="sendBtn" onclick="sendMessage()" title="إرسال">
+    <button class="send-btn" id="sendBtn" onclick="sendMessageStream()" title="إرسال">
       <i class="fa-solid fa-paper-plane"></i>
     </button>
   </div>
@@ -1788,10 +1778,6 @@ async function init() {
   loadTheme();
   renderChat();
   await loadDbChats();
-  // Close sidebar on ESC key
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeSidebar();
-  });
 }
 
 // ─── Stars ────────────────────────────────────────────────────
@@ -2153,21 +2139,12 @@ function saveChats() {
   catch(e) { showToast('⚠️ الذاكرة ممتلئة! احذف محادثات قديمة', 'error'); }
 }
 function toggleSidebar() {
-  const sidebar = document.getElementById('sidebar');
-  const overlay = document.getElementById('sidebarOverlay');
-  if (!sidebar || !overlay) return;
-  const isOpen = sidebar.classList.toggle('open');
-  overlay.classList.toggle('open', isOpen);
-  overlay.style.pointerEvents = isOpen ? 'auto' : 'none';
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('sidebarOverlay').classList.toggle('open');
 }
 function closeSidebar() {
-  const sidebar = document.getElementById('sidebar');
-  const overlay = document.getElementById('sidebarOverlay');
-  if (sidebar) sidebar.classList.remove('open');
-  if (overlay) {
-    overlay.classList.remove('open');
-    overlay.style.pointerEvents = 'none';
-  }
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebarOverlay').classList.remove('open');
 }
 function toggleTheme() {
   const h = document.documentElement;
@@ -2185,7 +2162,7 @@ function loadTheme() {
   document.getElementById('sidebarThemeIcon').className = `fa-solid ${icon}`;
 }
 function handleKey(e) {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessageStream(); }
 }
 function autoResize(el) {
   el.style.height = '52px';
@@ -2216,9 +2193,6 @@ async function sendMessageStream() {
   fd.append('mode', currentMode);
   fd.append('chat_id', currentChatId);
   fd.append('history', JSON.stringify(c.slice(0, -1)));
-  // FIX: إرسال CSRF token مطلوب لحماية المسار
-  const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
-  if (csrfToken) fd.append('csrf_token', csrfToken);
   let accumulated = '';
   try {
     const r = await fetch('/api/chat/stream', { method: 'POST', body: fd });
@@ -2254,7 +2228,7 @@ async function sendMessageStream() {
       }
     }
   } catch (err) {
-    if (accumulated.length === 0) { c.pop(); saveChats(); return sendMessage(); }
+    if (accumulated.length === 0) { c.pop(); saveChats(); return sendMessage(); /* fallback للـ endpoint العادي */ }
     showToast('⚠️ انقطع البث', 'error');
   } finally {
     isSending = false;
@@ -2332,10 +2306,6 @@ async function confirmDeleteAccount() {
     else showToast(d.error || 'تعذر الحذف', 'error');
   } catch(e) { showToast('خطأ في الاتصال', 'error'); }
 }
-
-// تفعيل Streaming كـ sendMessage الافتراضية
-const _origSend = sendMessage;
-window.sendMessage = function() { return sendMessageStream(); };
 
 // ─── Boot ─────────────────────────────────────────────────────
 init();
