@@ -18,12 +18,13 @@ from typing import Optional, Dict, Any, List
 import bcrypt
 import redis
 import requests
-import mistune  # FIX #2: نقل الاستيراد للأعلى — لا داعي لاستيراده داخل الدالة في كل استدعاء
+import mistune
 import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 import bleach
 import PyPDF2
+import base64
 from flask import (
     Flask, request, jsonify, session, redirect, url_for, render_template_string,
     Response, make_response, send_from_directory
@@ -41,7 +42,9 @@ class Config:
     # Flask
     SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "change-me-in-production-2026")
     # Session: Redis
-    SESSION_TYPE = os.environ.get("SESSION_TYPE", "filesystem")
+    # FIX: 'cookie' نوع الجلسة الأفضل على Render free — لا يحتاج filesystem أو redis
+    # الجلسة مشفرة ومخزنة في cookie المتصفح — تبقى حتى بعد restart الـ server
+    SESSION_TYPE = os.environ.get("SESSION_TYPE", "cookie")
     SESSION_FILE_DIR = os.environ.get("SESSION_FILE_DIR", "/tmp/flask_sessions")
     SESSION_REDIS = None  # يُهيَّأ فقط إذا كان SESSION_TYPE=redis
     SESSION_PERMANENT = True
@@ -49,9 +52,9 @@ class Config:
     SESSION_USE_SIGNER = True
     # Database
     DATABASE_URL = os.environ.get("DATABASE_URL", "")
-    # Celery
-    CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/1")
-    CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "redis://localhost:6379/2")
+    # Celery — uses Upstash Redis. Falls back to eager mode if not set.
+    CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "")
+    CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", os.environ.get("CELERY_BROKER_URL", ""))
     # API Keys
     GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
     # Upload
@@ -64,14 +67,20 @@ class Config:
     BCRYPT_ROUNDS = 12
     # SSL mode for DB — set DB_SSL_MODE=disable if your DB doesn't support SSL
     DB_SSL_MODE = os.environ.get("DB_SSL_MODE", "require")
+    # ─── Supabase Storage (for persistent file uploads) ───────────────
+    SUPABASE_URL      = os.environ.get("SUPABASE_URL", "")          # e.g. https://xxx.supabase.co
+    SUPABASE_KEY      = os.environ.get("SUPABASE_SERVICE_KEY", "")   # service_role key
+    SUPABASE_BUCKET   = os.environ.get("SUPABASE_BUCKET", "uploads") # bucket name
+    # ─── Upstash Redis (for rate limiting — survives restarts) ────────
+    # Set RATELIMIT_STORAGE_URL=redis://xxx.upstash.io:port?password=xxx in Render env vars
 
 # ─── Lazy Redis initializer (اختياري — يُستخدم فقط إذا SESSION_TYPE=redis) ───
 def init_redis() -> Optional[redis.Redis]:
-    if os.environ.get("SESSION_TYPE", "filesystem") != "redis":
+    if os.environ.get("SESSION_TYPE", "cookie") != "redis":
         return None
     if Config.SESSION_REDIS is None:
         Config.SESSION_REDIS = redis.from_url(
-            os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
+            os.environ.get("REDIS_URL", os.environ.get("RATELIMIT_STORAGE_URL", "")),
             socket_connect_timeout=5, socket_timeout=5,
             retry_on_timeout=True, health_check_interval=30, decode_responses=False
         )
@@ -81,9 +90,10 @@ def init_redis() -> Optional[redis.Redis]:
 # Application Factory
 # ============================================
 app = Flask(__name__)
-if os.environ.get("SESSION_TYPE", "filesystem") == "filesystem":
+_session_type = os.environ.get("SESSION_TYPE", "cookie")
+if _session_type == "filesystem":
     os.makedirs(os.environ.get("SESSION_FILE_DIR", "/tmp/flask_sessions"), exist_ok=True)
-else:
+elif _session_type == "redis":
     init_redis()
 app.config.from_object(Config)
 
@@ -99,20 +109,24 @@ def get_rate_limit_key() -> str:
 
 # Initialize extensions
 Session(app)
+# Set RATELIMIT_STORAGE_URL=redis://default:xxx@xxx.upstash.io:port in Render env vars
 limiter = Limiter(
     app=app,
     key_func=get_rate_limit_key,
-    default_limits=["30 per minute"]
+    default_limits=["30 per minute"],
+    storage_uri=os.environ.get("RATELIMIT_STORAGE_URL", "memory://")
 )
 
 # ─── Celery factory ────────────────────────
 def make_celery(app):
-    celery = Celery(
-        app.import_name,
-        backend=app.config['CELERY_RESULT_BACKEND'],
-        broker=app.config['CELERY_BROKER_URL']
-    )
+    broker  = app.config.get('CELERY_BROKER_URL') or "memory://localhost//"
+    backend = app.config.get('CELERY_RESULT_BACKEND') or "cache+memory://"
+    celery = Celery(app.import_name, backend=backend, broker=broker)
     celery.conf.update(app.config)
+    # No Redis broker — run tasks inline (no separate worker needed)
+    if not app.config.get('CELERY_BROKER_URL'):
+        celery.conf.task_always_eager = True
+        celery.conf.task_eager_propagates = True
 
     class ContextTask(celery.Task):
         def __call__(self, *args, **kwargs):
@@ -158,25 +172,38 @@ def init_db_pool() -> ConnectionPool:
     global db_pool
     if db_pool is None:
         db_url = Config.DATABASE_URL
+        if not db_url:
+            app.logger.error("DATABASE_URL not set")
+            raise RuntimeError("DATABASE_URL is required")
         if db_url.startswith("postgres://"):
             db_url = db_url.replace("postgres://", "postgresql://", 1)
-        # FIX #3: في psycopg3 يجب تمرير sslmode كـ query parameter داخل conninfo
-        # وليس في kwargs — وضعه في kwargs يُتجاهل أو يسبب خطأ حسب الإصدار
         if "sslmode" not in db_url:
             separator = "&" if "?" in db_url else "?"
             db_url = f"{db_url}{separator}sslmode={Config.DB_SSL_MODE}"
-        db_pool = ConnectionPool(
-            conninfo=db_url,
-            min_size=2,
-            max_size=10,
-            open=True,
-            kwargs={"row_factory": dict_row}
-        )
+        try:
+            db_pool = ConnectionPool(
+                conninfo=db_url,
+                min_size=1,
+                max_size=10,
+                open=True,
+                kwargs={"row_factory": dict_row}
+            )
+            app.logger.info("Database pool initialized successfully")
+        except Exception as e:
+            app.logger.error(f"Failed to initialize DB pool: {str(e)}")
+            db_pool = None
+            raise
     return db_pool
 
 def get_db_connection():
-    pool = init_db_pool()
-    return pool.getconn()
+    try:
+        pool = init_db_pool()
+        if pool is None:
+            return None
+        return pool.getconn()
+    except Exception as e:
+        app.logger.error(f"get_db_connection error: {str(e)}")
+        return None
 
 def return_db_connection(conn):
     if db_pool and conn:
@@ -241,6 +268,22 @@ def init_db_tables():
         return_db_connection(conn)
 
 with app.app_context():
+    if not Config.SUPABASE_URL or not Config.SUPABASE_KEY:
+        app.logger.warning(
+            "SUPABASE_URL or SUPABASE_SERVICE_KEY not set — "
+            "uploads go to local disk (lost on Render restart). "
+            "Add env vars in Render dashboard for persistent storage."
+        )
+    if not os.environ.get("RATELIMIT_STORAGE_URL"):
+        app.logger.warning(
+            "RATELIMIT_STORAGE_URL not set — rate limits use memory (reset on restart). "
+            "Set to Upstash Redis URL for persistent rate limiting."
+        )
+    if not os.environ.get("CELERY_BROKER_URL"):
+        app.logger.warning(
+            "CELERY_BROKER_URL not set — Celery running in eager mode (inline). "
+            "Set to Upstash Redis URL to enable background task processing."
+        )
     init_db_tables()
 
 # ============================================
@@ -726,10 +769,67 @@ def format_response(text: str) -> str:
     )
 
 # ============================================
-# File Handling
+# File Handling — Supabase Storage
 # ============================================
 def allowed_file(filename: str) -> bool:
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in Config.ALLOWED_EXTENSIONS
+
+def upload_to_supabase(file_bytes: bytes, filename: str, mime_type: str) -> Optional[str]:
+    """
+    رفع الملف لـ Supabase Storage — يرجع الـ public URL أو None عند الفشل.
+    يستخدم REST API مباشرة بدون حاجة لـ supabase-py library.
+    """
+    if not Config.SUPABASE_URL or not Config.SUPABASE_KEY:
+        # Fallback: save locally if Supabase not configured
+        return None
+    try:
+        url = f"{Config.SUPABASE_URL}/storage/v1/object/{Config.SUPABASE_BUCKET}/{filename}"
+        resp = requests.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {Config.SUPABASE_KEY}",
+                "Content-Type": mime_type,
+                "x-upsert": "true"
+            },
+            data=file_bytes,
+            timeout=30
+        )
+        if resp.status_code in (200, 201):
+            public_url = f"{Config.SUPABASE_URL}/storage/v1/object/public/{Config.SUPABASE_BUCKET}/{filename}"
+            return public_url
+        app.logger.error(f"Supabase upload failed: {resp.status_code} {resp.text}")
+        return None
+    except Exception as e:
+        app.logger.error(f"Supabase upload error: {str(e)}")
+        return None
+
+def save_file_with_fallback(file, original_filename: str, ext: str) -> tuple[Optional[str], Optional[bytes], Optional[str]]:
+    """
+    يحاول رفع الملف لـ Supabase أولاً، وإذا فشل يحفظه محلياً.
+    يرجع (image_url, img_bytes, mime_type)
+    """
+    mime_map = {'png':'image/png','jpg':'image/jpeg','jpeg':'image/jpeg','webp':'image/webp'}
+    mime_type = mime_map.get(ext, 'image/jpeg')
+    saved_name = f"{int(time.time())}_{secrets.token_hex(6)}.{ext}"
+
+    file_bytes = file.read()
+
+    # Try Supabase first
+    public_url = upload_to_supabase(file_bytes, saved_name, mime_type)
+    if public_url:
+        return public_url, file_bytes, mime_type
+
+    # Fallback: local disk
+    try:
+        os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
+        file_path = os.path.join(Config.UPLOAD_FOLDER, saved_name)
+        with open(file_path, 'wb') as f:
+            f.write(file_bytes)
+        app.logger.warning(f"Saved file locally (Supabase not configured): {file_path}")
+        return f"/uploads/{saved_name}", file_bytes, mime_type
+    except Exception as e:
+        app.logger.error(f"Local file save error: {str(e)}")
+        return None, file_bytes, mime_type
 
 def extract_pdf_text(file) -> str:
     """
@@ -813,6 +913,9 @@ def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if 'user' not in session:
+            # API routes: return 401 JSON so JS can handle gracefully
+            if request.path.startswith('/api/'):
+                return jsonify({"error": "session_expired", "redirect": "/login"}), 401
             return redirect(url_for('login'))
         return f(*args, **kwargs)
     return decorated_function
@@ -1779,9 +1882,15 @@ async function refreshCsrfToken() {
   } catch(e) {}
 }
 
-// wrapper لكل fetch يجدد التوكن تلقائياً عند 403
+// wrapper لكل fetch يجدد التوكن تلقائياً عند 403، ويعالج 401 (session منتهية)
 async function apiFetch(url, options = {}) {
   let r = await fetch(url, options);
+  if (r.status === 401) {
+    // Session انتهت — إعادة توجيه لصفحة تسجيل الدخول
+    showToast('⏳ انتهت الجلسة، جاري التحويل...', 'error');
+    setTimeout(() => { window.location.href = '/login'; }, 1500);
+    throw new Error('session_expired');
+  }
   if (r.status === 403) {
     await refreshCsrfToken();
     // أعد المحاولة مع التوكن الجديد
@@ -1946,7 +2055,10 @@ async function confirmDelete() {
 
   // Remove from DB
   try {
-    await fetch(`/api/chat/${id}`, { method: 'DELETE' });
+    await apiFetch(`/api/chat/${id}`, {
+      method: 'DELETE',
+      headers: { 'X-CSRFToken': csrfToken }
+    });
   } catch(e) {}
 
   await loadDbChats();
@@ -2171,8 +2283,23 @@ function copyText(t) {
   showToast('✅ تم النسخ', 'success');
 }
 function saveChats() {
-  try { localStorage.setItem('chats', JSON.stringify(chats)); }
-  catch(e) { showToast('⚠️ الذاكرة ممتلئة! احذف محادثات قديمة', 'error'); }
+  try {
+    localStorage.setItem('chats', JSON.stringify(chats));
+  } catch(e) {
+    // FIX #8: auto-cleanup oldest chats when localStorage is full
+    const ids = Object.keys(chats);
+    if (ids.length > 5) {
+      // Keep only the 5 most recent chats
+      const sorted = ids.sort((a, b) => parseInt(b) - parseInt(a)).slice(0, 5);
+      const trimmed = {};
+      sorted.forEach(id => { trimmed[id] = chats[id]; });
+      chats = trimmed;
+      try { localStorage.setItem('chats', JSON.stringify(chats)); }
+      catch(e2) { showToast('⚠️ الذاكرة ممتلئة — استخدم المحادثات من السيرفر', 'error'); }
+    } else {
+      showToast('⚠️ الذاكرة ممتلئة! احذف محادثات قديمة', 'error');
+    }
+  }
 }
 function toggleSidebar() {
   document.getElementById('sidebar').classList.toggle('open');
@@ -2258,6 +2385,8 @@ async function sendMessageStream() {
           if (data.done) {
             c[c.length-1].ai = data.formatted;
             c[c.length-1].rawAi = data.raw;
+            // FIX #6: save image_url from stream response
+            if (data.image_url) c[c.length-1].imageUrl = data.image_url;
             saveChats(); renderChat();
             await loadDbChats();
           }
@@ -2497,6 +2626,19 @@ def api_get_chats():
         c['created_at'] = str(c['created_at'])
     return jsonify({"chats": chats})
 
+# FIX #3: share route MUST be registered BEFORE <chat_id> variable routes
+# otherwise Flask matches /api/chat/share/xxx as chat_id="share"
+@app.route("/api/chat/share/<chat_id>", methods=["POST"])
+@login_required
+@csrf_required
+def api_create_share(chat_id):
+    user_email = session['user']['email']
+    token = create_share_token(chat_id, user_email)
+    if token:
+        share_url = url_for('share_chat', token=token, _external=True)
+        return jsonify({"share_url": share_url})
+    return jsonify({"error": "Failed to create share link"}), 500
+
 @app.route("/api/chat/<chat_id>")
 @login_required
 def api_get_chat(chat_id):
@@ -2512,17 +2654,6 @@ def api_delete_chat(chat_id):
     user_email = session['user']['email']
     ok = delete_chat_from_db(chat_id, user_email)
     return jsonify({"ok": ok})
-
-@app.route("/api/chat/share/<chat_id>", methods=["POST"])
-@login_required
-@csrf_required
-def api_create_share(chat_id):
-    user_email = session['user']['email']
-    token = create_share_token(chat_id, user_email)
-    if token:
-        share_url = url_for('share_chat', token=token, _external=True)
-        return jsonify({"share_url": share_url})
-    return jsonify({"error": "Failed to create share link"}), 500
 
 @app.route("/share/<token>")
 def share_chat(token):
@@ -2621,23 +2752,35 @@ def chat_stream():
         original_filename = secure_filename(file.filename)
         ext = original_filename.rsplit('.', 1)[1].lower() if '.' in original_filename else ''
         if ext in {'png', 'jpg', 'jpeg', 'webp'}:
-            os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
-            saved_name = f"{int(time.time())}_{secrets.token_hex(4)}.{ext}"
-            file_path  = os.path.join(Config.UPLOAD_FOLDER, saved_name)
-            file.save(file_path)
-            image_url = f"/uploads/{saved_name}"
+            image_url, img_bytes, img_mime = save_file_with_fallback(file, original_filename, ext)
             file_name = original_filename
+            img_b64 = base64.b64encode(img_bytes).decode('utf-8') if img_bytes else None
         elif ext == 'pdf':
             file_context = f"PDF content ({original_filename}):\n{extract_pdf_text(file)}\n\n"
             file_name = original_filename
+            img_b64 = None
         elif ext == 'txt':
             file_context = f"File content ({original_filename}):\n{extract_text_from_txt(file)}\n\n"
             file_name = original_filename
+            img_b64 = None
+    else:
+        img_b64 = None
 
-    # إذا أرسل المستخدم ملفاً بدون نص، نستخدم رسالة افتراضية واضحة بدل "Hello"
     default_msg = "اطلع على هذا الملف" if (file_context or image_url) else "Hello"
     final_user_message = (file_context + user_message).strip() or default_msg
-    messages.append({"role": "user", "content": final_user_message})
+
+    if img_b64 and img_mime:
+        messages.append({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": final_user_message or "اوصف هذه الصورة"},
+                {"type": "image_url", "image_url": {"url": f"data:{img_mime};base64,{img_b64}"}}
+            ]
+        })
+        vision_model = 'meta-llama/llama-4-scout-17b-16e-instruct'
+    else:
+        messages.append({"role": "user", "content": final_user_message})
+        vision_model = None
 
     model_map = {
         'thinker':  'qwen/qwen3-32b',
@@ -2647,7 +2790,7 @@ def chat_stream():
         'fast':     'llama-3.1-8b-instant',
         'funny':    'llama-3.1-8b-instant'
     }
-    model       = model_map.get(mode, 'llama-3.1-8b-instant')
+    model       = vision_model or model_map.get(mode, 'llama-3.1-8b-instant')
     temperature = {'funny':0.92,'creative':0.88,'writer':0.82,'thinker':0.45,'coder':0.25,'fast':0.72}.get(mode, 0.72)
 
     def generate():
@@ -2752,23 +2895,36 @@ def chat():
         original_filename = secure_filename(file.filename)
         ext = original_filename.rsplit('.', 1)[1].lower() if '.' in original_filename else ''
         if ext in {'png', 'jpg', 'jpeg', 'webp'}:
-            os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
-            saved_name = f"{int(time.time())}_{secrets.token_hex(4)}.{ext}"
-            file_path  = os.path.join(Config.UPLOAD_FOLDER, saved_name)
-            file.save(file_path)
-            image_url = f"/uploads/{saved_name}"
+            image_url, img_bytes, img_mime = save_file_with_fallback(file, original_filename, ext)
             file_name = original_filename
+            img_b64 = base64.b64encode(img_bytes).decode('utf-8') if img_bytes else None
         elif ext == 'pdf':
             file_context = f"PDF content ({original_filename}):\n{extract_pdf_text(file)}\n\n"
             file_name = original_filename
+            img_b64 = None
         elif ext == 'txt':
             file_context = f"File content ({original_filename}):\n{extract_text_from_txt(file)}\n\n"
             file_name = original_filename
+            img_b64 = None
+    else:
+        img_b64 = None
 
-    # إذا أرسل المستخدم ملفاً بدون نص، نستخدم رسالة افتراضية واضحة بدل "Hello"
     default_msg = "اطلع على هذا الملف" if (file_context or image_url) else "Hello"
     final_user_message = (file_context + user_message).strip() or default_msg
-    messages.append({"role": "user", "content": final_user_message})
+
+    # Vision: send image to Groq if available
+    if img_b64 and img_mime:
+        messages.append({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": final_user_message or "اوصف هذه الصورة"},
+                {"type": "image_url", "image_url": {"url": f"data:{img_mime};base64,{img_b64}"}}
+            ]
+        })
+        vision_model = 'meta-llama/llama-4-scout-17b-16e-instruct'
+    else:
+        messages.append({"role": "user", "content": final_user_message})
+        vision_model = None
 
     model_map = {
         'thinker':  'qwen/qwen3-32b',
@@ -2778,7 +2934,7 @@ def chat():
         'fast':     'llama-3.1-8b-instant',
         'funny':    'llama-3.1-8b-instant'
     }
-    model       = model_map.get(mode, 'llama-3.1-8b-instant')
+    model       = vision_model or model_map.get(mode, 'llama-3.1-8b-instant')
     temperature = {'funny':0.92,'creative':0.88,'writer':0.82,'thinker':0.45,'coder':0.25,'fast':0.72}.get(mode, 0.72)
 
     try:
@@ -2935,6 +3091,11 @@ def task_status(task_id):
 # ============================================
 @app.route('/uploads/<filename>')
 def uploaded_file(filename):
+    # Serve from Supabase CDN if configured (persistent, fast)
+    if Config.SUPABASE_URL and Config.SUPABASE_KEY:
+        public_url = f"{Config.SUPABASE_URL}/storage/v1/object/public/{Config.SUPABASE_BUCKET}/{filename}"
+        return redirect(public_url, 301)
+    # Fallback: local disk (ephemeral on Render free tier)
     return send_from_directory(Config.UPLOAD_FOLDER, filename)
 
 @app.route('/sw.js')
@@ -2976,6 +3137,11 @@ def get_csrf_token():
 # ============================================
 # Health Check
 # ============================================
+@app.route("/ping")
+def ping():
+    """Lightweight endpoint for UptimeRobot keep-alive monitoring"""
+    return "pong", 200
+
 @app.route("/health")
 def health_check():
     """
