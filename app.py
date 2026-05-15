@@ -1762,6 +1762,7 @@ textarea::placeholder { color:var(--text-muted); }
 ═══════════════════════════════════════════ -->
 <script>
 // ─── State ────────────────────────────────────────────────────
+const csrfToken = '{{ csrf_token }}';  // CSRF token من الخادم
 let currentChatId = localStorage.getItem('currentChatId') || Date.now().toString();
 let chats = {};
 let dbChats = [];
@@ -2057,6 +2058,7 @@ async function sendMessage() {
   c.push({ user: t || 'حلل الملف', ai: '__typing__', fileName: fName });
   saveChats(); renderChat();
   const fd = new FormData();
+  fd.append('csrf_token', csrfToken);
   fd.append('message', t);
   fd.append('mode', currentMode);
   fd.append('chat_id', currentChatId);
@@ -2094,6 +2096,7 @@ async function regenerate(i) {
   const u = c[i].user;
   c[i].ai = '__typing__'; renderChat();
   const fd = new FormData();
+  fd.append('csrf_token', csrfToken);
   fd.append('message', u); fd.append('mode', currentMode);
   fd.append('chat_id', currentChatId);
   fd.append('history', JSON.stringify(c.slice(0, i)));
@@ -2189,6 +2192,7 @@ async function sendMessageStream() {
   c.push({ user: t, ai: '__typing__' });
   saveChats(); renderChat();
   const fd = new FormData();
+  fd.append('csrf_token', csrfToken);
   fd.append('message', t);
   fd.append('mode', currentMode);
   fd.append('chat_id', currentChatId);
@@ -2255,7 +2259,10 @@ function finishOnboarding() {
 async function shareCurrentChat() {
   if (!currentChatId) return;
   try {
-    const r = await fetch(`/api/chat/${currentChatId}/share`, { method: 'POST' });
+    const r = await fetch(`/api/chat/${currentChatId}/share`, {
+      method: 'POST',
+      headers: { 'X-CSRFToken': csrfToken }
+    });
     const d = await r.json();
     if (d.ok && d.url) {
       const inp = document.getElementById('shareUrlInput');
@@ -2299,6 +2306,7 @@ async function confirmDeleteAccount() {
   if (val !== 'DELETE') { showToast('اكتب DELETE للتأكيد', 'error'); return; }
   try {
     const fd = new FormData();
+    fd.append('csrf_token', csrfToken);
     fd.append('confirmation', 'DELETE');
     const r = await fetch('/api/account/delete', { method: 'POST', body: fd });
     const d = await r.json();
