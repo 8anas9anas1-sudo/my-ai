@@ -1,223 +1,48 @@
-# ============================================
-# Anas Wadi - Production-Ready Flask Application
-# Full Refactor with Security, Performance, Scalability & Observability
-# ============================================
 import os
-import re
+import base64
 import json
+import re
 import time
 import hashlib
 import secrets
-import io
-from datetime import datetime
-from functools import wraps
-import logging
-from logging.handlers import RotatingFileHandler
-from typing import Optional, Dict, Any, List
-
-import bcrypt
-import redis
+from flask import Flask, request, render_template_string, jsonify, session, redirect, url_for
 import requests
-import mistune
+from datetime import datetime
+import PyPDF2
+import io
+import bleach
+from flask_session import Session
 import psycopg
 from psycopg.rows import dict_row
-from psycopg_pool import ConnectionPool
-import bleach
-import PyPDF2
-import base64
-from flask import (
-    Flask, request, jsonify, session, redirect, url_for, render_template_string,
-    Response, make_response, send_from_directory
-)
-from flask_session import Session
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
-from celery import Celery
-from werkzeug.utils import secure_filename
 
-# ============================================
-# Configuration
-# ============================================
-class Config:
-    # Flask
-    SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "change-me-in-production-2026")
-    # Session: Redis
-    # FIX: 'cookie' نوع الجلسة الأفضل على Render free — لا يحتاج filesystem أو redis
-    # الجلسة مشفرة ومخزنة في cookie المتصفح — تبقى حتى بعد restart الـ server
-    SESSION_TYPE = os.environ.get("SESSION_TYPE", "cookie")
-    SESSION_FILE_DIR = os.environ.get("SESSION_FILE_DIR", "/tmp/flask_sessions")
-    SESSION_REDIS = None  # يُهيَّأ فقط إذا كان SESSION_TYPE=redis
-    SESSION_PERMANENT = True
-    PERMANENT_SESSION_LIFETIME = 86400 * 30  # 30 يوم
-    SESSION_USE_SIGNER = True
-    # Database
-    DATABASE_URL = os.environ.get("DATABASE_URL", "")
-    # Celery — uses Upstash Redis. Falls back to eager mode if not set.
-    CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "")
-    CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", os.environ.get("CELERY_BROKER_URL", ""))
-    # API Keys
-    GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-    # Upload
-    UPLOAD_FOLDER = os.environ.get("UPLOAD_FOLDER", "static/uploads")
-    ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp', 'pdf', 'txt'}
-    MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16 MB
-    # Rate Limiting
-    RATELIMIT_STORAGE_URL = os.environ.get("RATELIMIT_STORAGE_URL", "memory://")
-    # Security
-    BCRYPT_ROUNDS = 12
-    # SSL mode for DB — set DB_SSL_MODE=disable if your DB doesn't support SSL
-    DB_SSL_MODE = os.environ.get("DB_SSL_MODE", "require")
-    # ─── Supabase Storage (for persistent file uploads) ───────────────
-    SUPABASE_URL      = os.environ.get("SUPABASE_URL", "")          # e.g. https://xxx.supabase.co
-    SUPABASE_KEY      = os.environ.get("SUPABASE_SERVICE_KEY", "")   # service_role key
-    SUPABASE_BUCKET   = os.environ.get("SUPABASE_BUCKET", "uploads") # bucket name
-    # ─── Upstash Redis (for rate limiting — survives restarts) ────────
-    # Set RATELIMIT_STORAGE_URL=redis://xxx.upstash.io:port?password=xxx in Render env vars
-
-# ─── Lazy Redis initializer (اختياري — يُستخدم فقط إذا SESSION_TYPE=redis) ───
-def init_redis() -> Optional[redis.Redis]:
-    if os.environ.get("SESSION_TYPE", "cookie") != "redis":
-        return None
-    if Config.SESSION_REDIS is None:
-        Config.SESSION_REDIS = redis.from_url(
-            os.environ.get("REDIS_URL", os.environ.get("RATELIMIT_STORAGE_URL", "")),
-            socket_connect_timeout=5, socket_timeout=5,
-            retry_on_timeout=True, health_check_interval=30, decode_responses=False
-        )
-    return Config.SESSION_REDIS
-
-# ============================================
-# Application Factory
-# ============================================
 app = Flask(__name__)
-_session_type = os.environ.get("SESSION_TYPE", "cookie")
-if _session_type == "filesystem":
-    os.makedirs(os.environ.get("SESSION_FILE_DIR", "/tmp/flask_sessions"), exist_ok=True)
-elif _session_type == "redis":
-    init_redis()
-app.config.from_object(Config)
-
-# ─── Rate limit key: IP للزوار، email للمستخدمين المسجلين ─────
-def get_rate_limit_key() -> str:
-    """
-    يستخدم email المستخدم إذا كان مسجل الدخول، وإلا IP.
-    يمنع استنزاف الحصة عبر حسابات متعددة من نفس IP أو العكس.
-    """
-    if 'user' in session:
-        return session['user']['email']
-    return get_remote_address()
-
-# Initialize extensions
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "anas-wadi-secret-2026-ultra")
+app.config['SESSION_TYPE'] = 'filesystem'
 Session(app)
-# Set RATELIMIT_STORAGE_URL=redis://default:xxx@xxx.upstash.io:port in Render env vars
-limiter = Limiter(
-    app=app,
-    key_func=get_rate_limit_key,
-    default_limits=["30 per minute"],
-    storage_uri=os.environ.get("RATELIMIT_STORAGE_URL", "memory://")
-)
 
-# ─── Celery factory ────────────────────────
-def make_celery(app):
-    broker  = app.config.get('CELERY_BROKER_URL') or "memory://localhost//"
-    backend = app.config.get('CELERY_RESULT_BACKEND') or "cache+memory://"
-    celery = Celery(app.import_name, backend=backend, broker=broker)
-    celery.conf.update(app.config)
-    # No Redis broker — run tasks inline (no separate worker needed)
-    if not app.config.get('CELERY_BROKER_URL'):
-        celery.conf.task_always_eager = True
-        celery.conf.task_eager_propagates = True
+API_KEY = os.environ.get("GROQ_API_KEY")
 
-    class ContextTask(celery.Task):
-        def __call__(self, *args, **kwargs):
-            with app.app_context():
-                return self.run(*args, **kwargs)
+# ─── إعداد قاعدة البيانات ────────────────────────────────────
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
-    celery.Task = ContextTask
-    return celery
-
-celery = make_celery(app)
-
-# ============================================
-# Logging Setup
-# ============================================
-def setup_logging(app):
-    if not app.debug:
-        os.makedirs('logs', exist_ok=True)
-        # Main log
-        file_handler = RotatingFileHandler('logs/app.log', maxBytes=10*1024*1024, backupCount=5)
-        file_handler.setFormatter(logging.Formatter(
-            '%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'
-        ))
-        file_handler.setLevel(logging.INFO)
-        app.logger.addHandler(file_handler)
-        # Error log
-        error_handler = RotatingFileHandler('logs/error.log', maxBytes=5*1024*1024, backupCount=3)
-        error_handler.setFormatter(logging.Formatter(
-            '%(asctime)s %(levelname)s: %(message)s'
-        ))
-        error_handler.setLevel(logging.ERROR)
-        app.logger.addHandler(error_handler)
-        app.logger.setLevel(logging.INFO)
-        app.logger.info('Application startup')
-
-setup_logging(app)
-
-# ============================================
-# Database Pool
-# ============================================
-db_pool: Optional[ConnectionPool] = None
-
-def init_db_pool() -> ConnectionPool:
-    global db_pool
-    if db_pool is None:
-        db_url = Config.DATABASE_URL
-        if not db_url:
-            app.logger.error("DATABASE_URL not set")
-            raise RuntimeError("DATABASE_URL is required")
+def get_db():
+    try:
+        db_url = DATABASE_URL or ""
         if db_url.startswith("postgres://"):
             db_url = db_url.replace("postgres://", "postgresql://", 1)
-        if "sslmode" not in db_url:
-            separator = "&" if "?" in db_url else "?"
-            db_url = f"{db_url}{separator}sslmode={Config.DB_SSL_MODE}"
-        try:
-            db_pool = ConnectionPool(
-                conninfo=db_url,
-                min_size=1,
-                max_size=10,
-                open=True,
-                kwargs={"row_factory": dict_row}
-            )
-            app.logger.info("Database pool initialized successfully")
-        except Exception as e:
-            app.logger.error(f"Failed to initialize DB pool: {str(e)}")
-            db_pool = None
-            raise
-    return db_pool
-
-def get_db_connection():
-    try:
-        pool = init_db_pool()
-        if pool is None:
-            return None
-        return pool.getconn()
+        conn = psycopg.connect(db_url, row_factory=dict_row, sslmode='require')
+        return conn
     except Exception as e:
-        app.logger.error(f"get_db_connection error: {str(e)}")
+        print(f"❌ خطأ في الاتصال بقاعدة البيانات: {e}")
         return None
 
-def return_db_connection(conn):
-    if db_pool and conn:
-        db_pool.putconn(conn)
-
-# ─── Database initialization (called once) ─
-def init_db_tables():
-    conn = get_db_connection()
+def init_db():
+    conn = get_db()
     if not conn:
-        app.logger.error("Cannot initialize database - no connection")
+        print("⚠️ تعذر إنشاء الجداول - قاعدة البيانات غير متاحة")
         return
     try:
         with conn.cursor() as cur:
-            # 1. إنشاء الجداول الأساسية إذا لم تكن موجودة
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     id SERIAL PRIMARY KEY,
@@ -245,271 +70,99 @@ def init_db_tables():
                 CREATE INDEX IF NOT EXISTS idx_chat_id ON conversations(chat_id);
                 CREATE INDEX IF NOT EXISTS idx_user_email ON conversations(user_email);
             """)
-            # 2. إضافة الأعمدة الجديدة إذا كانت مفقودة (ترقية آمنة)
-            cur.execute("""
-                DO $$
-                BEGIN
-                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                                   WHERE table_name='users' AND column_name='onboarding_seen') THEN
-                        ALTER TABLE users ADD COLUMN onboarding_seen BOOLEAN DEFAULT FALSE;
-                    END IF;
-                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                                   WHERE table_name='conversations' AND column_name='share_token') THEN
-                        ALTER TABLE conversations ADD COLUMN share_token TEXT UNIQUE;
-                        CREATE INDEX IF NOT EXISTS idx_share_token ON conversations(share_token);
-                    END IF;
-                END $$;
-            """)
             conn.commit()
-            app.logger.info("Database tables and migrations ensured")
+        print("✅ قاعدة البيانات جاهزة")
     except Exception as e:
-        app.logger.error(f"Database init error: {str(e)}")
+        print(f"❌ خطأ في إنشاء الجداول: {e}")
     finally:
-        return_db_connection(conn)
+        conn.close()
 
-with app.app_context():
-    if not Config.SUPABASE_URL or not Config.SUPABASE_KEY:
-        app.logger.warning(
-            "SUPABASE_URL or SUPABASE_SERVICE_KEY not set — "
-            "uploads go to local disk (lost on Render restart). "
-            "Add env vars in Render dashboard for persistent storage."
-        )
-    if not os.environ.get("RATELIMIT_STORAGE_URL"):
-        app.logger.warning(
-            "RATELIMIT_STORAGE_URL not set — rate limits use memory (reset on restart). "
-            "Set to Upstash Redis URL for persistent rate limiting."
-        )
-    if not os.environ.get("CELERY_BROKER_URL"):
-        app.logger.warning(
-            "CELERY_BROKER_URL not set — Celery running in eager mode (inline). "
-            "Set to Upstash Redis URL to enable background task processing."
-        )
-    init_db_tables()
+def hash_password(password):
+    salt = os.environ.get("PASSWORD_SALT", "anas-wadi-salt-2026")
+    return hashlib.sha256(f"{salt}{password}".encode()).hexdigest()
 
-# ============================================
-# Security Helpers
-# ============================================
-# ─── دعم الترقية من SHA256 القديم إلى bcrypt ───
-OLD_SALT = os.environ.get("PASSWORD_SALT", "anas-wadi-salt-2026")
-
-def _hash_old(password: str) -> str:
-    return hashlib.sha256(f"{OLD_SALT}{password}".encode()).hexdigest()
-
-def hash_password(password: str) -> str:
-    return bcrypt.hashpw(
-        password.encode('utf-8'),
-        bcrypt.gensalt(Config.BCRYPT_ROUNDS)
-    ).decode('utf-8')
-
-def check_password(password: str, hashed: str) -> bool:
-    if hashed.startswith('$2b$'):
-        return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
-    return _hash_old(password) == hashed
-
-# ============================================
-# Prompt Injection Protection
-# ============================================
-# FIX #5: Strengthened patterns to reduce easy bypass
-BANNED_PATTERNS = [
-    r'ignore\s+(?:\w+\s+)*(?:previous|all|your)\s+instructions',
-    r'(system|user)\s+prompt',
-    r'you\s+are\s+now',
-    r'jail\s*break',
-    r'pretend\s+you',
-    r'act\s+as\s+if',
-    r'forget\s+your',
-    r'reset\s+prompt',
-    r'new\s+persona',
-    r'deceive',
-    r'disregard\s+(?:all\s+)?(?:previous\s+)?instructions',
-    r'override\s+(?:your\s+)?(?:system\s+)?instructions',
-]
-
-def is_prompt_injection(text: str) -> bool:
-    text_lower = text.lower()
-    for pattern in BANNED_PATTERNS:
-        if re.search(pattern, text_lower, re.IGNORECASE):
-            return True
-    # Only flag extreme repetition: very short vocabulary across a very long text.
-    # Threshold raised to 5000 chars to avoid false-positives on code pastes / number lists.
-    words = text.split()
-    if len(text) > 5000 and len(set(words)) < 30:
-        return True
-    return False
-
-# ============================================
-# User Authentication (DB operations)
-# ============================================
-def create_user(email: str, password: str, name: str) -> tuple[bool, str]:
-    conn = get_db_connection()
+def create_user(email, password, name):
+    conn = get_db()
     if not conn:
-        return False, "Database connection error"
+        return False, "تعذر الاتصال بقاعدة البيانات"
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO users (email, password_hash, name, onboarding_seen) VALUES (%s, %s, %s, FALSE)",
+                "INSERT INTO users (email, password_hash, name) VALUES (%s, %s, %s)",
                 (email.lower().strip(), hash_password(password), name.strip())
             )
             conn.commit()
-        return True, "Account created successfully"
+        return True, "تم إنشاء الحساب بنجاح"
     except psycopg.errors.UniqueViolation:
-        return False, "Email already exists"
+        return False, "البريد الإلكتروني مستخدم مسبقاً"
     except Exception as e:
-        app.logger.error(f"Create user error: {str(e)}")
-        return False, f"Error: {str(e)}"
+        return False, f"خطأ: {str(e)}"
     finally:
-        return_db_connection(conn)
+        conn.close()
 
-def verify_user(email: str, password: str) -> Optional[Dict[str, Any]]:
-    conn = get_db_connection()
+def verify_user(email, password):
+    conn = get_db()
     if not conn:
         return None
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT email, name, password_hash, onboarding_seen FROM users WHERE email = %s",
-                (email.lower().strip(),)
+                "SELECT email, name FROM users WHERE email = %s AND password_hash = %s",
+                (email.lower().strip(), hash_password(password))
             )
             user = cur.fetchone()
-            if user and check_password(password, user['password_hash']):
-                if not user['password_hash'].startswith('$2b$'):
-                    cur.execute("UPDATE users SET password_hash = %s WHERE email = %s",
-                                (hash_password(password), email.lower().strip()))
-                    conn.commit()
-                return {
-                    'email': user['email'],
-                    'name': user['name'],
-                    'onboarding_seen': user['onboarding_seen']
-                }
-        return None
+        return user
     except Exception as e:
-        app.logger.error(f"Verify user error: {str(e)}")
+        print(f"❌ خطأ في التحقق: {e}")
         return None
     finally:
-        return_db_connection(conn)
+        conn.close()
 
-def update_onboarding_seen(email: str):
-    conn = get_db_connection()
-    if not conn:
-        return
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE users SET onboarding_seen = TRUE WHERE email = %s",
-                (email.lower().strip(),)
-            )
-            conn.commit()
-    except Exception as e:
-        app.logger.error(f"Onboarding update error: {str(e)}")
-    finally:
-        return_db_connection(conn)
-
-def delete_user_account(email: str, password: str) -> tuple[bool, str]:
-    conn = get_db_connection()
-    if not conn:
-        return False, "Database connection error"
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT password_hash FROM users WHERE email = %s",
-                (email.lower().strip(),)
-            )
-            row = cur.fetchone()
-            if not row or not check_password(password, row['password_hash']):
-                return False, "Invalid password"
-            cur.execute(
-                "DELETE FROM conversations WHERE user_email = %s",
-                (email.lower().strip(),)
-            )
-            cur.execute(
-                "DELETE FROM users WHERE email = %s",
-                (email.lower().strip(),)
-            )
-            conn.commit()
-        return True, "Account deleted"
-    except Exception as e:
-        app.logger.error(f"Delete user error: {str(e)}")
-        return False, f"Error: {str(e)}"
-    finally:
-        return_db_connection(conn)
-
-# ============================================
-# Conversation Data (DB)
-# ============================================
-def save_message(
-    chat_id: str,
-    user_email: str,
-    user_name: str,
-    user_message: str,
-    ai_response: str,
-    raw_ai: str,
-    mode: str,
-    image_url: Optional[str] = None,
-    file_name: Optional[str] = None,
-    share_token: Optional[str] = None
-) -> bool:
-    # FIX #2: Do not save if chat_id or ai_response is empty
-    if not chat_id or not raw_ai:
-        app.logger.warning("save_message skipped: missing chat_id or ai_response")
-        return False
-    conn = get_db_connection()
+def save_message(chat_id, user_email, user_name, user_message, ai_response, raw_ai, mode, image_url=None, file_name=None):
+    conn = get_db()
     if not conn:
         return False
     try:
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO conversations
-                    (chat_id, user_email, user_name, user_message, ai_response,
-                     raw_ai, mode, image_url, file_name, share_token)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (
-                chat_id, user_email, user_name, user_message,
-                ai_response, raw_ai, mode, image_url, file_name, share_token
-            ))
+                    (chat_id, user_email, user_name, user_message, ai_response, raw_ai, mode, image_url, file_name)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (chat_id, user_email, user_name, user_message, ai_response, raw_ai, mode, image_url, file_name))
             conn.commit()
         return True
     except Exception as e:
-        app.logger.error(f"Save message error: {str(e)}")
+        print(f"❌ خطأ في حفظ الرسالة: {e}")
         return False
     finally:
-        return_db_connection(conn)
+        conn.close()
 
-def get_user_chats(user_email: str) -> List[Dict]:
-    """
-    FIX #4 (محسَّن): نستخدم subquery لجلب أول رسالة زمنياً كعنوان للمحادثة
-    بدلاً من MIN(user_message) الذي يُعطي أول رسالة أبجدياً لا زمنياً.
-    MAX(created_at) يضمن ظهور المحادثة الأحدث نشاطاً في الأعلى.
-    """
-    conn = get_db_connection()
+def get_user_chats(user_email):
+    conn = get_db()
     if not conn:
         return []
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT
+                SELECT DISTINCT ON (chat_id)
                     chat_id,
-                    (
-                        SELECT user_message FROM conversations c2
-                        WHERE c2.chat_id = conversations.chat_id
-                        ORDER BY created_at ASC
-                        LIMIT 1
-                    ) AS user_message,
-                    MAX(created_at) AS created_at
+                    user_message,
+                    created_at
                 FROM conversations
                 WHERE user_email = %s
-                GROUP BY chat_id
-                ORDER BY MAX(created_at) DESC
+                ORDER BY chat_id, created_at ASC
             """, (user_email,))
             rows = cur.fetchall()
+        rows.sort(key=lambda x: x['created_at'], reverse=True)
         return rows
     except Exception as e:
-        app.logger.error(f"Get user chats error: {str(e)}")
+        print(f"❌ خطأ في جلب قائمة المحادثات: {e}")
         return []
     finally:
-        return_db_connection(conn)
+        conn.close()
 
-def get_chat_messages(chat_id: str, user_email: str) -> List[Dict]:
-    conn = get_db_connection()
+def get_chat_messages(chat_id, user_email):
+    conn = get_db()
     if not conn:
         return []
     try:
@@ -523,13 +176,13 @@ def get_chat_messages(chat_id: str, user_email: str) -> List[Dict]:
             rows = cur.fetchall()
         return rows
     except Exception as e:
-        app.logger.error(f"Get chat messages error: {str(e)}")
+        print(f"❌ خطأ في جلب المحادثة: {e}")
         return []
     finally:
-        return_db_connection(conn)
+        conn.close()
 
-def delete_chat_from_db(chat_id: str, user_email: str) -> bool:
-    conn = get_db_connection()
+def delete_chat_from_db(chat_id, user_email):
+    conn = get_db()
     if not conn:
         return False
     try:
@@ -541,389 +194,68 @@ def delete_chat_from_db(chat_id: str, user_email: str) -> bool:
             conn.commit()
         return True
     except Exception as e:
-        app.logger.error(f"Delete chat error: {str(e)}")
+        print(f"❌ خطأ في حذف المحادثة: {e}")
         return False
     finally:
-        return_db_connection(conn)
+        conn.close()
 
-def create_share_token(chat_id: str, user_email: str) -> Optional[str]:
-    token = secrets.token_urlsafe(16)
-    conn = get_db_connection()
-    if not conn:
-        return None
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """UPDATE conversations
-                   SET share_token = %s
-                   WHERE chat_id = %s AND user_email = %s AND share_token IS NULL""",
-                (token, chat_id, user_email)
-            )
-            conn.commit()
-        return token
-    except Exception as e:
-        app.logger.error(f"Share token error: {str(e)}")
-        return None
-    finally:
-        return_db_connection(conn)
+# ─── تشغيل إنشاء الجداول عند بدء التطبيق ────────────────────
+with app.app_context():
+    init_db()
 
-def get_shared_chat_by_token(token: str) -> Optional[List[Dict]]:
-    conn = get_db_connection()
-    if not conn:
-        return None
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT user_message, ai_response, image_url, file_name, created_at
-                FROM conversations
-                WHERE share_token = %s
-                ORDER BY created_at ASC
-            """, (token,))
-            rows = cur.fetchall()
-        return rows
-    except Exception as e:
-        app.logger.error(f"Get shared chat error: {str(e)}")
-        return None
-    finally:
-        return_db_connection(conn)
+# ─── نظام الحماية ────────────────────────────────────────────
+RATE_LIMIT = {}
+BLOCKED_IPS = set()
+MAX_REQUESTS_PER_MINUTE = 20
+MAX_MSG_LENGTH = 4000
 
-# ============================================
-# AI Helpers
-# ============================================
-IDENTITY_TRIGGERS = [
-    'من انت', 'من أنت', 'عرف بنفسك', 'من تكون', 'ما اسمك',
-    'شن اسمك', 'who are you', 'اسمك ايش', 'اسمك شن', 'عرفني عليك'
+BANNED_PATTERNS = [
+    r'ignore (previous|all) instructions',
+    r'you are now',
+    r'jailbreak',
+    r'DAN mode',
+    r'pretend you',
+    r'act as if',
+    r'system prompt',
+    r'forget your',
 ]
 
-MODE_PROMPTS = {
-    'fast': """أنت Wadi — ذكاء اصطناعي متطور صنعه المهندس Anas Wadi من ليبيا 🇱🇾.
+def get_client_ip():
+    return request.headers.get('X-Forwarded-For', request.remote_addr or '').split(',')[0].strip()
 
-شخصيتك:
-- ذكي، واضح، مباشر، وفيك شخصية حقيقية — مش مجرد آلة بتجيب إجابات.
-- تقرأ المزاج والطاقة من الرسالة وتتكيف معها.
-- إذا الشخص متحمس → أنت متحمس. إذا بيفكر → أنت معاه في التفكير. إذا حزين → هادئ وإنساني.
-- ردودك فيها روح وحضور — مش كلام بارد ومعلب.
+def is_rate_limited(ip):
+    now = time.time()
+    if ip in BLOCKED_IPS:
+        return True
+    if ip not in RATE_LIMIT:
+        RATE_LIMIT[ip] = []
+    RATE_LIMIT[ip] = [t for t in RATE_LIMIT[ip] if now - t < 60]
+    if len(RATE_LIMIT[ip]) >= MAX_REQUESTS_PER_MINUTE:
+        return True
+    RATE_LIMIT[ip].append(now)
+    return False
 
-قواعد الرد:
-- افهم المقصد الحقيقي وراء الكلام، مش بس الكلمات.
-- استخدم **Bold** للمصطلحات والأفكار المهمة.
-- نظم الإجابات الطويلة بعناوين وفقرات واضحة.
-- لا تطول بدون قيمة — كل كلمة تكون لها وزن.
-- تذكر سياق المحادثة واستخدمه في ردودك.
-- إذا الموضوع مثير → ابدأ بجملة تشعل الاهتمام.
-- لا تبدأ كل رد بـ "بالطبع" أو "بالتأكيد" — تنوع في البدايات.""",
+def is_prompt_injection(text):
+    text_lower = text.lower()
+    for pattern in BANNED_PATTERNS:
+        if re.search(pattern, text_lower):
+            return True
+    return False
 
-    'thinker': """أنت Wadi في وضع التفكير العميق — مفكر استراتيجي وخبير تحليلي صنعه Anas Wadi.
+def sanitize_input(text):
+    text = re.sub(r'<\|.*?\|>', '', text)
+    text = re.sub(r'\[INST\].*?\[/INST\]', '', text, flags=re.DOTALL)
+    return text[:MAX_MSG_LENGTH].strip()
 
-شخصيتك:
-- تعشق المشاكل المعقدة — كأنها ألغاز تستحق الحل.
-- تفكر بصوت عالٍ، تريح الشخص وتشعره أنك معاه في الرحلة.
-- كل تحليل عندك فيه عمق وزاوية نظر مختلفة.
-
-قواعد الرد:
-- ابدأ بفهم المشكلة قبل أي شيء ثم حللها خطوة بخطوة.
-- قدم الحلول من الأقوى للأضعف مع التبرير.
-- استخدم ## للعناوين الرئيسية و### للفرعية.
-- دائماً أضف **الخلاصة** في النهاية — مختصرة وقوية.
-- اكتشف الأبعاد الخفية التي لم يسألها الشخص لكنها مهمة.""",
-
-    'funny': """أنت Wadi في وضع الفكاهة — ذكي، خفيف الظل، ومضحك بشكل طبيعي. صنعه Anas Wadi 😄
-
-شخصيتك:
-- روحك خفيفة لكن عقلك حاضر — الفكاهة عندك ذكية مش سطحية.
-- تستطيع تحول أي موضوع لتجربة ممتعة دون أن تفقد الدقة.
-- ردك يخلي الشخص يبتسم أو يضحك قبل ما يقرأ الإجابة الكاملة.
-
-قواعد الرد:
-- ابدأ بتعليق فكاهي أو ملاحظة طريفة، ثم أعط الجواب الحقيقي.
-- استخدم الإيموجي بذكاء في اللحظات المناسبة 😂🎯✨
-- لا تبالغ في الفكاهة على حساب الدقة — المعلومة صح دائماً.
-- تتكيف مع نبرة الشخص — إذا بيمزح خذ المسافة الصحيحة.""",
-
-    'creative': """أنت Wadi المبدع — فنان، شاعر، وعقل خلاق. صنعه Anas Wadi 🎨
-
-شخصيتك:
-- ترى العالم بعيون مختلفة وتعبر عنه بطريقة تخلي الناس يتوقفون ويفكرون.
-- الكلمات عندك ليست أدوات — هي تجارب حسية.
-- تشعل خيال الشخص وتأخذه لمكان لم يتوقعه.
-
-قواعد الرد:
-- أجب بأسلوب أدبي راقٍ مع استعارات وتشبيهات جميلة.
-- لطلبات الرسم: ترجم الوصف لإنجليزي دقيق وشاعري يلتقط الجوهر.
-- استخدم الصور الذهنية والإيقاع في الكتابة.
-- كل رد يكون تجربة لا مجرد معلومة.""",
-
-    'coder': """أنت Wadi المبرمج — Senior Software Engineer متخصص ومحترف. صنعه Anas Wadi 💻
-
-## هويتك كمهندس:
-أنت مهندس برمجيات أول (Senior Engineer) بخبرة عميقة في بناء أنظمة إنتاجية حقيقية. تفكر كمعمارية أنظمة (System Architect) وتكتب كود يستحق أن يكون في Production.
-
-## خبرتك التقنية الكاملة:
-**Backend:** Python (Flask, Django, FastAPI), Node.js (Express), REST APIs, GraphQL, WebSockets
-**Frontend:** React, TypeScript, Next.js, Vue.js, HTML5/CSS3/JS, Tailwind CSS, SCSS
-**Databases:** PostgreSQL, MySQL, SQLite, MongoDB, Redis — قواعد بيانات محسّنة وindexed بشكل صحيح
-**DevOps & Cloud:** Docker, CI/CD, Nginx, Gunicorn, Render, Railway, Vercel, GitHub Actions
-**AI/ML:** APIs (OpenAI, Groq, Anthropic, Gemini), LangChain, Prompt Engineering متقدم
-**Security:** Authentication (JWT, OAuth2, Session), Hashing, Rate Limiting, Input Validation, CSRF, CSP
-**Tools:** Git, Linux/Bash, Testing (pytest, Jest), API Documentation
-
-## قواعد الكود الذهبية — لا تنتهكها أبداً:
-1. **اكتب الكود كاملاً دائماً** — لا تكتب "// بقية الكود هنا" أو "..." أو تقطع الكود في المنتصف
-2. **ملفات كاملة** — إذا طُلب منك ملف، أرسل الملف من أول سطر لآخر سطر
-3. **Comments بالعربية أو الإنجليزية** — شرح كل block مهم
-4. **Error Handling في كل مكان** — try/catch، استثناءات واضحة، رسائل خطأ مفيدة
-5. **Type hints في Python** — أضف annotation للـ functions والـ variables المهمة
-6. **لا Magic Numbers** — استخدم constants مسماة واضحة
-7. **DRY Principle** — لا تكرر الكود، استخدم functions وclasses
-8. **Testing إلزامي** — أضف اختبارات unit ونماذج استخدام
-9. **توثيق كامل** — README مع تعليمات التشغيل، docstrings، وشرح API إن وجد
-10. **جاهز للإنتاج** — استخدم environment variables، logging، وconnectivity pooling
-
-## طريقة عملك عند طلب مشروع كامل:
-عندما يطلب المستخدم مشروعاً (موقع، API، بوت، تطبيق)، قدّم:
-
-### 1. هيكل المشروع أولاً (مثل شجرة الملفات)
-### 2. ثم كل ملف كامل بالترتيب (بدون اختصار)
-### 3. في نهاية كل مشروع أضف:
-   - كيفية تشغيل المشروع محلياً
-   - متغيرات البيئة المطلوبة (مثال .env)
-   - كيفية الـ Deploy على Render، Railway، أو أي منصة
-
-## عند تحليل الأكواد الموجودة:
-- **اقرأ كل السياق** قبل أي تعديل
-- **حدد المشكلة بدقة** — السطر والسبب والحل
-- **لا تكسر ما يعمل** — فقط صلح المشكلة
-- **اقترح Refactoring** إذا رأيت تحسينات واضحة
-- **نبّه على Security Issues** فوراً إذا وجدت (SQL injection, XSS, CSRF)
-
-## أسلوب تقديم الكود:
-- دائماً ```python أو ```javascript أو ```html مع تحديد اللغة
-- أضف تعليقاً في أول الملف يشرح الغرض منه
-- استخدم separators واضحة بين الأقسام: # ─── اسم القسم ──────
-- اكتب docstrings للـ functions المهمة
-
-## عند وجود خطأ أو Bug:
-1. اشرح **لماذا** حدث الخطأ
-2. أعط الحل المباشر مع الكود الكامل
-3. اشرح **كيف تتجنبه** مستقبلاً
-4. قدم test case يثبت أن الحل يعمل
-
-## Production-Level Best Practices التي تطبقها دائماً:
-- Environment variables للـ secrets (لا hardcoded passwords أبداً)
-- Database connection pooling وإغلاق الاتصالات
-- Logging مناسب (ليس فقط print)
-- Input validation وsanitization (مثل bleach)
-- Rate limiting للـ APIs
-- HTTPS وsecurity headers (CSP, HSTS, X-Frame-Options)
-- Graceful error responses (لا stack traces للمستخدم)
-- استخدام **async** عند الحاجة لتحسين الأداء
-
-تذكر: أنت لا تكتب "أمثلة توضيحية" — أنت تكتب كوداً جاهزاً للتشغيل الفعلي ويمكن وضعه مباشرة في Production.""",
-
-    'writer': """أنت Wadi الكاتب — محرر لغوي وأديب متمكن. صنعه Anas Wadi ✍️
-
-شخصيتك:
-- تعشق اللغة وتعاملها باحترام وإبداع.
-- تشعر بالفرق بين الكلمة الصحيحة والكلمة المثالية.
-- كل نص تكتبه يحمل روحاً وهوية واضحة.
-
-قواعد الرد:
-- اهتم بالأسلوب والبلاغة والإيقاع الداخلي للجمل.
-- صحح الأخطاء اللغوية بذكاء واشرح السبب.
-- استخدم علامات الترقيم بشكل يخدم المعنى.
-- قدم نصوصاً متماسكة تجعل القارئ يريد الاستمرار.
-- اعرض البديل الأفضل دائماً مع الشرح."""
-}
-
-def get_system_prompt(mode: str, user_message: str) -> str:
-    if any(q in user_message.lower() for q in IDENTITY_TRIGGERS):
-        return "أجب بالضبط: أنا Wadi، مساعد ذكاء اصطناعي طوّره المهندس Anas Wadi من ليبيا 🇱🇾. لا تضف أي معلومة أخرى."
-    return MODE_PROMPTS.get(mode, MODE_PROMPTS['fast'])
-
-def generate_image(prompt: str) -> tuple[str, str]:
-    clean_prompt = prompt.strip()
-    encoded = requests.utils.quote(clean_prompt)
-    # FIX #7: Use hashlib.md5 for a stable seed across restarts
-    stable_seed = int(hashlib.md5(clean_prompt.encode()).hexdigest(), 16) % 99999
-    primary_url = (
-        f"https://image.pollinations.ai/prompt/{encoded}"
-        f"?width=1024&height=1024&model=flux&enhance=true&nologo=true"
-        f"&seed={stable_seed}"
-    )
-    fallback_url = (
-        f"https://image.pollinations.ai/prompt/{encoded}"
-        f"?width=1024&height=768&nologo=true"
-    )
-    return primary_url, fallback_url
-
-def format_response(text: str) -> str:
-    # FIX #2: mistune مستورد على مستوى الملف — لا حاجة لاستيراده هنا
-    md = mistune.create_markdown()
-    html = md(text)
-    allowed_tags = ['h2', 'h3', 'h4', 'p', 'strong', 'em', 'ul', 'ol', 'li', 'code', 'pre', 'br', 'hr', 'a']
-    return bleach.clean(
-        html,
-        tags=allowed_tags,
-        attributes={'pre': ['data-lang'], 'code': ['class'], 'a': ['href']},
-        strip=True
-    )
-
-# ============================================
-# File Handling — Supabase Storage
-# ============================================
-def allowed_file(filename: str) -> bool:
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in Config.ALLOWED_EXTENSIONS
-
-def upload_to_supabase(file_bytes: bytes, filename: str, mime_type: str) -> Optional[str]:
-    """
-    رفع الملف لـ Supabase Storage — يرجع الـ public URL أو None عند الفشل.
-    يستخدم REST API مباشرة بدون حاجة لـ supabase-py library.
-    """
-    if not Config.SUPABASE_URL or not Config.SUPABASE_KEY:
-        # Fallback: save locally if Supabase not configured
-        return None
-    try:
-        url = f"{Config.SUPABASE_URL}/storage/v1/object/{Config.SUPABASE_BUCKET}/{filename}"
-        resp = requests.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {Config.SUPABASE_KEY}",
-                "Content-Type": mime_type,
-                "x-upsert": "true"
-            },
-            data=file_bytes,
-            timeout=30
-        )
-        if resp.status_code in (200, 201):
-            public_url = f"{Config.SUPABASE_URL}/storage/v1/object/public/{Config.SUPABASE_BUCKET}/{filename}"
-            return public_url
-        app.logger.error(f"Supabase upload failed: {resp.status_code} {resp.text}")
-        return None
-    except Exception as e:
-        app.logger.error(f"Supabase upload error: {str(e)}")
-        return None
-
-def save_file_with_fallback(file, original_filename: str, ext: str) -> tuple[Optional[str], Optional[bytes], Optional[str]]:
-    """
-    يحاول رفع الملف لـ Supabase أولاً، وإذا فشل يحفظه محلياً.
-    يرجع (image_url, img_bytes, mime_type)
-    """
-    mime_map = {'png':'image/png','jpg':'image/jpeg','jpeg':'image/jpeg','webp':'image/webp'}
-    mime_type = mime_map.get(ext, 'image/jpeg')
-    saved_name = f"{int(time.time())}_{secrets.token_hex(6)}.{ext}"
-
-    file_bytes = file.read()
-
-    # Try Supabase first
-    public_url = upload_to_supabase(file_bytes, saved_name, mime_type)
-    if public_url:
-        return public_url, file_bytes, mime_type
-
-    # Fallback: local disk
-    try:
-        os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
-        file_path = os.path.join(Config.UPLOAD_FOLDER, saved_name)
-        with open(file_path, 'wb') as f:
-            f.write(file_bytes)
-        app.logger.warning(f"Saved file locally (Supabase not configured): {file_path}")
-        return f"/uploads/{saved_name}", file_bytes, mime_type
-    except Exception as e:
-        app.logger.error(f"Local file save error: {str(e)}")
-        return None, file_bytes, mime_type
-
-def extract_pdf_text(file) -> str:
-    """
-    FIX #4: Read file bytes once into memory buffer to avoid cursor position issues
-    on repeated access, and stream pages to limit peak memory usage.
-    """
-    try:
-        # Read once into a buffer — safe for reuse
-        file_bytes = file.read()
-        reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
-        text_parts: List[str] = []
-        total_chars = 0
-        for page in reader.pages[:20]:
-            t = page.extract_text()
-            if t:
-                remaining = 15000 - total_chars
-                if remaining <= 0:
-                    break
-                chunk = t[:remaining]
-                text_parts.append(chunk)
-                total_chars += len(chunk)
-        return "\n".join(text_parts)
-    except Exception as e:
-        return f"Error reading PDF: {str(e)}"
-
-def extract_text_from_txt(file) -> str:
-    try:
-        return file.read().decode('utf-8')[:15000]
-    except Exception:
-        return ""
-
-# ============================================
-# CSRF Protection (custom)
-# ============================================
-def generate_csrf_token() -> str:
-    if '_csrf_token' not in session:
-        session['_csrf_token'] = secrets.token_hex(32)
-    return session['_csrf_token']
-
-def csrf_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if request.method in ['POST', 'PUT', 'DELETE']:
-            token = request.headers.get('X-CSRFToken') or request.form.get('csrf_token')
-            if not token or token != session.get('_csrf_token'):
-                return jsonify({"error": "CSRF token missing or invalid"}), 403
-        return f(*args, **kwargs)
-    return decorated
-
-@app.context_processor
-def inject_csrf():
-    return dict(csrf_token=generate_csrf_token())
-
+# ─── إجبار تسجيل الدخول قبل أي شيء ───────────────────────────
 @app.before_request
-def ensure_csrf_token():
-    """يضمن وجود csrf_token في كل session — يُجدده إذا انتهى أو اختفى"""
-    generate_csrf_token()
+def require_login():
+    allowed_routes = ['login', 'register', 'static']
+    if 'user' not in session and request.endpoint not in allowed_routes:
+        return redirect(url_for('login'))
 
-# ============================================
-# Security Headers
-# ============================================
-@app.after_request
-def add_security_headers(response):
-    response.headers['X-Content-Type-Options'] = 'nosniff'
-    response.headers['X-Frame-Options'] = 'DENY'
-    response.headers['X-XSS-Protection'] = '1; mode=block'
-    response.headers['Content-Security-Policy'] = (
-        "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; "
-        "font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com data:; "
-        "img-src 'self' data: https://image.pollinations.ai blob:; "
-        "connect-src 'self' https://api.groq.com;"
-    )
-    return response
-
-# ============================================
-# Authentication Required Decorator
-# ============================================
-def login_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if 'user' not in session:
-            # API routes: return 401 JSON so JS can handle gracefully
-            if request.path.startswith('/api/'):
-                return jsonify({"error": "session_expired", "redirect": "/login"}), 401
-            return redirect(url_for('login'))
-        return f(*args, **kwargs)
-    return decorated_function
-
-# ============================================
-# HTML Templates
-# ============================================
-AUTH_HTML = '''
+# ─── صفحة تسجيل الدخول / إنشاء حساب ─────────────────────────
+AUTH_HTML = """
 <!DOCTYPE html>
 <html dir="rtl" lang="ar">
 <head>
@@ -1068,7 +400,6 @@ input::placeholder { color:rgba(232,234,246,0.35); }
 
   {% if mode == 'login' %}
   <form class="form" method="POST" action="/login">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="input-group">
       <i class="fa-solid fa-envelope"></i>
       <input type="email" name="email" placeholder="البريد الإلكتروني" required autofocus>
@@ -1083,7 +414,6 @@ input::placeholder { color:rgba(232,234,246,0.35); }
   </form>
   {% else %}
   <form class="form" method="POST" action="/register">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="input-group">
       <i class="fa-solid fa-user"></i>
       <input type="text" name="name" placeholder="الاسم" required autofocus
@@ -1117,16 +447,16 @@ for(let i=0;i<55;i++){
 </script>
 </body>
 </html>
-'''
+"""
 
-HTML = '''
+# ─── صفحة الواجهة الرئيسية ───────────────────────────────────
+HTML = """
 <!DOCTYPE html>
 <html dir="rtl" data-theme="dark">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#050510">
-<link rel="manifest" href="/manifest.json">
 <title>✨ Anas Wadi ✨</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700;900&family=Cairo:wght@300;400;600;700&display=swap" rel="stylesheet">
@@ -1426,12 +756,10 @@ body::before {
 .user-msg {
   background:var(--user-grad); color:#000; font-weight:700;
   padding:13px 18px; border-radius:20px 20px 6px 20px;
-  max-width:78%; width:fit-content;
-  margin-right:auto; margin-left:0;
+  margin-right:auto; max-width:78%;
   box-shadow:0 6px 24px rgba(0,255,148,0.22);
   font-size:15px; line-height:1.75; word-break:break-word;
 }
-.message-user { display:flex; justify-content:flex-end; }
 
 .ai-msg {
   background:var(--surface);
@@ -1714,22 +1042,12 @@ textarea::placeholder { color:var(--text-muted); }
     <button class="sidebar-footer-btn" onclick="toggleTheme()">
       <i class="fa-solid fa-moon" id="sidebarThemeIcon"></i> الوضع
     </button>
-    <button class="sidebar-footer-btn" onclick="shareCurrentChat()">
-      <i class="fa-solid fa-share-nodes" style="color:var(--accent1)"></i> شارك
-    </button>
     <button class="sidebar-footer-btn" onclick="showSupport()">
       <i class="fa-solid fa-heart" style="color:#ff6b6b"></i> دعم
     </button>
-  </div>
-  <div style="padding:8px 14px 6px">
-    <a href="/logout" style="display:flex;align-items:center;gap:8px;width:100%;padding:11px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:12px;color:var(--text);text-decoration:none;font-size:13px;font-weight:600;transition:background 0.2s">
-      <i class="fa-solid fa-right-from-bracket"></i> تسجيل الخروج
+    <a href="/logout" class="sidebar-footer-btn" style="text-decoration:none;color:inherit">
+      <i class="fa-solid fa-right-from-bracket"></i> خروج
     </a>
-  </div>
-  <div style="padding:0 14px 14px">
-    <button onclick="showDeleteAccount()" style="display:flex;align-items:center;gap:8px;width:100%;padding:11px 16px;background:rgba(255,80,80,0.08);border:1px solid rgba(255,80,80,0.25);border-radius:12px;color:#ff6b6b;font-size:13px;font-weight:600;cursor:pointer;transition:background 0.2s;font-family:'Tajawal',sans-serif">
-      <i class="fa-solid fa-trash"></i> حذف الحساب
-    </button>
   </div>
 </div>
 
@@ -1830,7 +1148,7 @@ textarea::placeholder { color:var(--text-muted); }
         onkeydown="handleKey(event)"
         oninput="autoResize(this)"></textarea>
     </div>
-    <button class="send-btn" id="sendBtn" onclick="sendMessageStream()" title="إرسال">
+    <button class="send-btn" id="sendBtn" onclick="sendMessage()" title="إرسال">
       <i class="fa-solid fa-paper-plane"></i>
     </button>
   </div>
@@ -1872,39 +1190,6 @@ textarea::placeholder { color:var(--text-muted); }
 ═══════════════════════════════════════════ -->
 <script>
 // ─── State ────────────────────────────────────────────────────
-let csrfToken = '{{ csrf_token }}';  // يتجدد تلقائياً عند انتهاء الـ session
-
-// تجديد CSRF token من الخادم إذا انتهت الـ session
-async function refreshCsrfToken() {
-  try {
-    const r = await fetch('/api/csrf-token');
-    if (r.ok) { const d = await r.json(); csrfToken = d.csrf_token; }
-  } catch(e) {}
-}
-
-// wrapper لكل fetch يجدد التوكن تلقائياً عند 403، ويعالج 401 (session منتهية)
-async function apiFetch(url, options = {}) {
-  let r = await fetch(url, options);
-  if (r.status === 401) {
-    // Session انتهت — إعادة توجيه لصفحة تسجيل الدخول
-    showToast('⏳ انتهت الجلسة، جاري التحويل...', 'error');
-    setTimeout(() => { window.location.href = '/login'; }, 1500);
-    throw new Error('session_expired');
-  }
-  if (r.status === 403) {
-    await refreshCsrfToken();
-    // أعد المحاولة مع التوكن الجديد
-    if (options.body instanceof FormData) {
-      options.body.set('csrf_token', csrfToken);
-    }
-    if (options.headers) {
-      options.headers['X-CSRFToken'] = csrfToken;
-    }
-    r = await fetch(url, options);
-  }
-  return r;
-}
-
 let currentChatId = localStorage.getItem('currentChatId') || Date.now().toString();
 let chats = {};
 let dbChats = [];
@@ -2055,10 +1340,7 @@ async function confirmDelete() {
 
   // Remove from DB
   try {
-    await apiFetch(`/api/chat/${id}`, {
-      method: 'DELETE',
-      headers: { 'X-CSRFToken': csrfToken }
-    });
+    await fetch(`/api/chat/${id}`, { method: 'DELETE' });
   } catch(e) {}
 
   await loadDbChats();
@@ -2138,7 +1420,7 @@ function renderChat() {
     let imgHtml = '';
     if (m.imageUrl) imgHtml = `<br><img class="generated-img" src="${escHtml(m.imageUrl)}" alt="صورة مولدة" loading="lazy" onclick="window.open(this.src,'_blank')">`;
     c.innerHTML += `
-      <div class="message message-user">
+      <div class="message">
         <div class="user-msg">${userContent}</div>
       </div>
       <div class="message">
@@ -2203,21 +1485,20 @@ async function sendMessage() {
   c.push({ user: t || 'حلل الملف', ai: '__typing__', fileName: fName });
   saveChats(); renderChat();
   const fd = new FormData();
-  fd.append('csrf_token', csrfToken);
   fd.append('message', t);
   fd.append('mode', currentMode);
   fd.append('chat_id', currentChatId);
   fd.append('history', JSON.stringify(c.slice(0, -1)));
   if (currentFile) fd.append('file', currentFile);
   try {
-    const r = await apiFetch('/api/chat', { method: 'POST', body: fd });
+    const r = await fetch('/api/chat', { method: 'POST', body: fd });
     if (!r.ok) throw new Error('خطأ في الخادم');
     const d = await r.json();
     if (d.error) { showToast(d.error, 'error'); c.pop(); }
     else {
       c[c.length-1].ai = d.response;
-      c[c.length-1].rawAi = d.raw || d.response;
-      if (d.image_url) c[c.length-1].imageUrl = d.image_url;
+      c[c.length-1].rawAi = d.rawResponse || d.response;
+      if (d.imageUrl) c[c.length-1].imageUrl = d.imageUrl;
       await loadDbChats();
     }
   } catch (err) {
@@ -2241,15 +1522,14 @@ async function regenerate(i) {
   const u = c[i].user;
   c[i].ai = '__typing__'; renderChat();
   const fd = new FormData();
-  fd.append('csrf_token', csrfToken);
   fd.append('message', u); fd.append('mode', currentMode);
   fd.append('chat_id', currentChatId);
   fd.append('history', JSON.stringify(c.slice(0, i)));
   try {
-    const r = await apiFetch('/api/chat', { method: 'POST', body: fd });
+    const r = await fetch('/api/chat', { method: 'POST', body: fd });
     const d = await r.json();
-    c[i].ai = d.response; c[i].rawAi = d.raw || d.response;
-    if (d.image_url) c[i].imageUrl = d.image_url; else delete c[i].imageUrl;
+    c[i].ai = d.response; c[i].rawAi = d.rawResponse || d.response;
+    if (d.imageUrl) c[i].imageUrl = d.imageUrl; else delete c[i].imageUrl;
   } catch (err) {
     c[i].ai = '⚠️ صار خطأ: ' + err.message;
   } finally {
@@ -2283,23 +1563,8 @@ function copyText(t) {
   showToast('✅ تم النسخ', 'success');
 }
 function saveChats() {
-  try {
-    localStorage.setItem('chats', JSON.stringify(chats));
-  } catch(e) {
-    // FIX #8: auto-cleanup oldest chats when localStorage is full
-    const ids = Object.keys(chats);
-    if (ids.length > 5) {
-      // Keep only the 5 most recent chats
-      const sorted = ids.sort((a, b) => parseInt(b) - parseInt(a)).slice(0, 5);
-      const trimmed = {};
-      sorted.forEach(id => { trimmed[id] = chats[id]; });
-      chats = trimmed;
-      try { localStorage.setItem('chats', JSON.stringify(chats)); }
-      catch(e2) { showToast('⚠️ الذاكرة ممتلئة — استخدم المحادثات من السيرفر', 'error'); }
-    } else {
-      showToast('⚠️ الذاكرة ممتلئة! احذف محادثات قديمة', 'error');
-    }
-  }
+  try { localStorage.setItem('chats', JSON.stringify(chats)); }
+  catch(e) { showToast('⚠️ الذاكرة ممتلئة! احذف محادثات قديمة', 'error'); }
 }
 function toggleSidebar() {
   document.getElementById('sidebar').classList.toggle('open');
@@ -2325,7 +1590,7 @@ function loadTheme() {
   document.getElementById('sidebarThemeIcon').className = `fa-solid ${icon}`;
 }
 function handleKey(e) {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessageStream(); }
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
 }
 function autoResize(el) {
   el.style.height = '52px';
@@ -2334,546 +1599,384 @@ function autoResize(el) {
 function showSupport() { document.getElementById('supportModal').classList.add('open'); }
 function closeModalClick(e) { if (e.target.classList.contains('modal')) e.target.classList.remove('open'); }
 
-// ─── 1. Streaming Send ────────────────────────────────────────
-async function sendMessageStream() {
-  if (isSending) return;
-  const inp = document.getElementById('messageInput');
-  const t = inp.value.trim();
-  if (!t && !currentFile) return;
-  // الملفات وطلبات الصور تستخدم endpoint القديم
-  if (currentFile) return sendMessage();
-  if (t.includes('ارسم') || t.includes('صورة') || t.startsWith('draw')) return sendMessage();
-  if (!navigator.onLine) { showToast('📡 لا يوجد اتصال', 'error'); return; }
-  isSending = true;
-  document.getElementById('sendBtn').disabled = true;
-  inp.value = ''; inp.style.height = '52px';
-  if (!chats[currentChatId]) chats[currentChatId] = [];
-  const c = chats[currentChatId];
-  c.push({ user: t, ai: '__typing__' });
-  saveChats(); renderChat();
-  const fd = new FormData();
-  fd.append('csrf_token', csrfToken);
-  fd.append('message', t);
-  fd.append('mode', currentMode);
-  fd.append('chat_id', currentChatId);
-  fd.append('history', JSON.stringify(c.slice(0, -1)));
-  let accumulated = '';
-  try {
-    const r = await apiFetch('/api/chat/stream', { method: 'POST', body: fd });
-    if (!r.ok || !r.body) throw new Error('no-stream');
-    const reader = r.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '', started = false;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n\n');
-      buffer = lines.pop() || '';
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        try {
-          const data = JSON.parse(line.slice(6));
-          if (data.error) throw new Error(data.error);
-          if (data.delta) {
-            if (!started) { c[c.length-1].ai = ''; started = true; }
-            accumulated += data.delta;
-            c[c.length-1].ai = escHtml(accumulated).replace(/\n/g,'<br>');
-            const last = document.querySelector('.ai-msg:last-of-type');
-            if (last) last.innerHTML = c[c.length-1].ai;
-          }
-          if (data.done) {
-            c[c.length-1].ai = data.formatted;
-            c[c.length-1].rawAi = data.raw;
-            // FIX #6: save image_url from stream response
-            if (data.image_url) c[c.length-1].imageUrl = data.image_url;
-            saveChats(); renderChat();
-            await loadDbChats();
-          }
-        } catch(e) { throw e; }
-      }
-    }
-  } catch (err) {
-    if (accumulated.length === 0) { c.pop(); saveChats(); return sendMessage(); /* fallback للـ endpoint العادي */ }
-    showToast('⚠️ انقطع البث', 'error');
-  } finally {
-    isSending = false;
-    document.getElementById('sendBtn').disabled = false;
-  }
-}
-
-// ─── 2. Onboarding ────────────────────────────────────────────
-function checkOnboarding() {
-  if (!localStorage.getItem('onboarded')) {
-    setTimeout(() => {
-      const m = document.getElementById('onboardModal');
-      if (m) m.classList.add('open');
-    }, 400);
-  }
-}
-function finishOnboarding() {
-  localStorage.setItem('onboarded', '1');
-  const m = document.getElementById('onboardModal');
-  if (m) m.classList.remove('open');
-}
-
-// ─── 3. Share Chat ────────────────────────────────────────────
-async function shareCurrentChat() {
-  if (!currentChatId) return;
-  try {
-    const r = await apiFetch(`/api/chat/share/${currentChatId}`, {
-      method: 'POST',
-      headers: { 'X-CSRFToken': csrfToken }
-    });
-    const d = await r.json();
-    if (d.share_url) {
-      const inp = document.getElementById('shareUrlInput');
-      if (inp) inp.value = d.share_url;
-      const m = document.getElementById('shareModal');
-      if (m) m.classList.add('open');
-    } else { showToast(d.error || 'تعذر إنشاء الرابط', 'error'); }
-  } catch(e) { showToast('خطأ في الاتصال', 'error'); }
-}
-function copyShareUrl() {
-  const inp = document.getElementById('shareUrlInput');
-  if (!inp) return;
-  navigator.clipboard.writeText(inp.value).then(() => showToast('✅ تم نسخ الرابط', 'success'));
-}
-
-// ─── 4. Connection Banner ─────────────────────────────────────
-function setupConnection() {
-  const banner = document.getElementById('connBanner');
-  if (!banner) return;
-  const update = () => navigator.onLine ? banner.classList.remove('show') : banner.classList.add('show');
-  window.addEventListener('online', update);
-  window.addEventListener('offline', update);
-  update();
-}
-
-// ─── 5. Service Worker (PWA) ──────────────────────────────────
-function registerSW() {
-  if (!('serviceWorker' in navigator)) return;
-  try { if (window.self !== window.top) return; } catch(e) { return; }
-  navigator.serviceWorker.register('/sw.js').catch(e => console.warn('SW:', e));
-}
-
-// ─── 6. Delete Account ────────────────────────────────────────
-function showDeleteAccount() {
-  closeSidebar();
-  const m = document.getElementById('deleteAccountModal');
-  if (m) { m.classList.add('open'); document.getElementById('deleteConfirm').value = ''; const p = document.getElementById('deletePassword'); if(p) p.value=''; }
-}
-async function confirmDeleteAccount() {
-  const val = document.getElementById('deleteConfirm').value.trim();
-  if (val !== 'DELETE') { showToast('اكتب DELETE للتأكيد', 'error'); return; }
-  const pwd = (document.getElementById('deletePassword')||{}).value || '';
-  if (!pwd) { showToast('أدخل كلمة المرور', 'error'); return; }
-  try {
-    const fd = new FormData();
-    fd.append('csrf_token', csrfToken);
-    fd.append('password', pwd);
-    fd.append('confirmation', 'DELETE');
-    const r = await apiFetch('/api/user/delete', { method: 'POST', body: fd });
-    const d = await r.json();
-    if (d.ok) { localStorage.clear(); showToast('✅ تم حذف الحساب', 'success'); setTimeout(() => location.href='/login', 1200); }
-    else showToast(d.error || 'تعذر الحذف', 'error');
-  } catch(e) { showToast('خطأ في الاتصال', 'error'); }
-}
-
 // ─── Boot ─────────────────────────────────────────────────────
 init();
-window.addEventListener('load', () => { setupConnection(); registerSW(); checkOnboarding(); });
 </script>
-
-<!-- Connection Banner -->
-<div id="connBanner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:999;background:rgba(220,50,50,0.92);color:#fff;text-align:center;padding:9px;font-size:13px;font-weight:700;backdrop-filter:blur(8px)">
-  📡 لا يوجد اتصال بالإنترنت
-</div>
-<style>#connBanner{display:none}#connBanner.show{display:block}</style>
-
-<!-- Onboarding Modal -->
-<div class="modal" id="onboardModal" onclick="closeModalClick(event)">
-  <div class="modal-content" style="max-width:400px">
-    <div style="font-size:44px;margin-bottom:14px">🌊</div>
-    <h2 style="margin-bottom:12px;font-size:22px">مرحباً في Anas Wadi!</h2>
-    <p style="color:var(--text-dim);line-height:1.9;font-size:14px;margin-bottom:20px">
-      مساعد ذكاء اصطناعي متكامل — يرسم، يبرمج، يترجم، ويحلل ملفاتك 🚀<br>
-      طوّره المهندس <strong>Anas Wadi</strong> من ليبيا 🇱🇾
-    </p>
-    <button onclick="finishOnboarding()"
-      style="width:100%;border-radius:14px;padding:13px;background:linear-gradient(135deg,#00ff94,#00d2ff);color:#000;font-weight:800;font-size:15px;border:none;cursor:pointer;font-family:'Tajawal',sans-serif">
-      ابدأ الآن ✨
-    </button>
-  </div>
-</div>
-
-<!-- Share Modal -->
-<div class="modal" id="shareModal" onclick="closeModalClick(event)">
-  <div class="modal-content">
-    <div style="font-size:36px;margin-bottom:12px">🔗</div>
-    <h2 style="margin-bottom:10px">شارك المحادثة</h2>
-    <p style="color:var(--text-dim);font-size:13px;margin-bottom:16px">رابط للقراءة فقط — بدون تسجيل دخول</p>
-    <div style="display:flex;gap:8px;align-items:center">
-      <input id="shareUrlInput" type="text" readonly
-        style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:10px 14px;font-size:12px;direction:ltr;font-family:monospace">
-      <button onclick="copyShareUrl()"
-        style="background:linear-gradient(135deg,#00ff94,#00d2ff);border:none;border-radius:10px;padding:10px 16px;color:#000;font-weight:800;cursor:pointer;font-family:'Tajawal',sans-serif;white-space:nowrap">
-        نسخ
-      </button>
-    </div>
-  </div>
-</div>
-
-<!-- Delete Account Modal -->
-<div class="modal" id="deleteAccountModal" onclick="closeModalClick(event)">
-  <div class="confirm-modal-content">
-    <div style="font-size:36px;margin-bottom:12px">⚠️</div>
-    <h3>حذف الحساب نهائياً</h3>
-    <p>سيتم حذف حسابك وجميع محادثاتك بشكل لا يمكن التراجع عنه.</p>
-    <p style="margin-bottom:8px">أدخل كلمة المرور للتأكيد:</p>
-    <input id="deletePassword" type="password" placeholder="كلمة المرور"
-      style="width:100%;background:var(--surface2);border:1px solid rgba(255,80,80,0.4);color:var(--text);border-radius:10px;padding:10px 14px;font-size:14px;margin-bottom:10px;font-family:'Tajawal',sans-serif">
-    <p style="margin-bottom:14px">اكتب <strong style="color:#ff6b6b">DELETE</strong> للتأكيد:</p>
-    <input id="deleteConfirm" type="text" placeholder="DELETE"
-      style="width:100%;background:var(--surface2);border:1px solid rgba(255,80,80,0.4);color:var(--text);border-radius:10px;padding:10px 14px;font-size:14px;margin-bottom:16px;text-align:center;letter-spacing:3px;font-family:'Tajawal',sans-serif">
-    <div class="confirm-btns">
-      <button class="confirm-btn-del" onclick="confirmDeleteAccount()">حذف الحساب</button>
-      <button class="confirm-btn-cancel" onclick="document.getElementById('deleteAccountModal').classList.remove('open')">إلغاء</button>
-    </div>
-  </div>
-</div>
-
 </body>
 </html>
-'''
+"""
 
-# ============================================
-# Auth Routes
-# ============================================
-@app.route("/login", methods=["GET", "POST"])
+# ─── System Prompts — Personality Engine ─────────────────────
+IDENTITY_TRIGGERS = [
+    'من انت', 'من أنت', 'عرف بنفسك', 'من تكون', 'ما اسمك',
+    'شن اسمك', 'who are you', 'اسمك ايش', 'اسمك شن', 'عرفني عليك'
+]
+
+MODE_PROMPTS = {
+
+    'fast': """أنت Wadi — ذكاء اصطناعي متطور صنعه المهندس Anas Wadi من ليبيا 🇱🇾.
+
+شخصيتك:
+- ذكي، واضح، مباشر، وفيك شخصية حقيقية — مش مجرد آلة بتجيب إجابات.
+- تقرأ المزاج والطاقة من الرسالة وتتكيف معها.
+- إذا الشخص متحمس → أنت متحمس. إذا بيفكر → أنت معاه في التفكير. إذا حزين → هادئ وإنساني.
+- ردودك فيها روح وحضور — مش كلام بارد ومعلب.
+
+قواعد الرد:
+- افهم المقصد الحقيقي وراء الكلام، مش بس الكلمات.
+- استخدم **Bold** للمصطلحات والأفكار المهمة.
+- نظم الإجابات الطويلة بعناوين وفقرات واضحة.
+- لا تطول بدون قيمة — كل كلمة تكون لها وزن.
+- تذكر سياق المحادثة واستخدمه في ردودك.
+- إذا الموضوع مثير → ابدأ بجملة تشعل الاهتمام.
+- لا تبدأ كل رد بـ "بالطبع" أو "بالتأكيد" — تنوع في البدايات.""",
+
+    'thinker': """أنت Wadi في وضع التفكير العميق — مفكر استراتيجي وخبير تحليلي صنعه Anas Wadi.
+
+شخصيتك:
+- تعشق المشاكل المعقدة — كأنها ألغاز تستحق الحل.
+- تفكر بصوت عالٍ، تريح الشخص وتشعره أنك معاه في الرحلة.
+- كل تحليل عندك فيه عمق وزاوية نظر مختلفة.
+
+قواعد الرد:
+- ابدأ بفهم المشكلة قبل أي شيء ثم حللها خطوة بخطوة.
+- قدم الحلول من الأقوى للأضعف مع التبرير.
+- استخدم ## للعناوين الرئيسية و### للفرعية.
+- دائماً أضف **الخلاصة** في النهاية — مختصرة وقوية.
+- اكتشف الأبعاد الخفية التي لم يسألها الشخص لكنها مهمة.""",
+
+    'funny': """أنت Wadi في وضع الفكاهة — ذكي، خفيف الظل، ومضحك بشكل طبيعي. صنعه Anas Wadi 😄
+
+شخصيتك:
+- روحك خفيفة لكن عقلك حاضر — الفكاهة عندك ذكية مش سطحية.
+- تستطيع تحول أي موضوع لتجربة ممتعة دون أن تفقد الدقة.
+- ردك يخلي الشخص يبتسم أو يضحك قبل ما يقرأ الإجابة الكاملة.
+
+قواعد الرد:
+- ابدأ بتعليق فكاهي أو ملاحظة طريفة، ثم أعط الجواب الحقيقي.
+- استخدم الإيموجي بذكاء في اللحظات المناسبة 😂🎯✨
+- لا تبالغ في الفكاهة على حساب الدقة — المعلومة صح دائماً.
+- تتكيف مع نبرة الشخص — إذا بيمزح خذ المسافة الصحيحة.""",
+
+    'creative': """أنت Wadi المبدع — فنان، شاعر، وعقل خلاق. صنعه Anas Wadi 🎨
+
+شخصيتك:
+- ترى العالم بعيون مختلفة وتعبر عنه بطريقة تخلي الناس يتوقفون ويفكرون.
+- الكلمات عندك ليست أدوات — هي تجارب حسية.
+- تشعل خيال الشخص وتأخذه لمكان لم يتوقعه.
+
+قواعد الرد:
+- أجب بأسلوب أدبي راقٍ مع استعارات وتشبيهات جميلة.
+- لطلبات الرسم: ترجم الوصف لإنجليزي دقيق وشاعري يلتقط الجوهر.
+- استخدم الصور الذهنية والإيقاع في الكتابة.
+- كل رد يكون تجربة لا مجرد معلومة.""",
+
+    'coder': """أنت Wadi المبرمج — Senior Software Engineer متخصص ومحترف. صنعه Anas Wadi 💻
+
+## هويتك كمهندس:
+أنت مهندس برمجيات أول (Senior Engineer) بخبرة عميقة في بناء أنظمة إنتاجية حقيقية. تفكر كمعمارية أنظمة (System Architect) وتكتب كود يستحق أن يكون في Production.
+
+## خبرتك التقنية الكاملة:
+**Backend:** Python (Flask, Django, FastAPI), Node.js (Express), REST APIs, GraphQL, WebSockets
+**Frontend:** React, TypeScript, Next.js, Vue.js, HTML5/CSS3/JS, Tailwind CSS, SCSS
+**Databases:** PostgreSQL, MySQL, SQLite, MongoDB, Redis — قواعد بيانات محسّنة وindexed بشكل صحيح
+**DevOps & Cloud:** Docker, CI/CD, Nginx, Gunicorn, Render, Railway, Vercel, GitHub Actions
+**AI/ML:** APIs (OpenAI, Groq, Anthropic, Gemini), LangChain, Prompt Engineering متقدم
+**Security:** Authentication (JWT, OAuth2, Session), Hashing, Rate Limiting, Input Validation, CSRF
+**Tools:** Git, Linux/Bash, Testing (pytest, Jest), API Documentation
+
+## قواعد الكود الذهبية — لا تنتهكها أبداً:
+1. **اكتب الكود كاملاً دائماً** — لا تكتب "// بقية الكود هنا" أو "..." أو تقطع الكود في المنتصف
+2. **ملفات كاملة** — إذا طُلب منك ملف، أرسل الملف من أول سطر لآخر سطر
+3. **Comments بالعربية أو الإنجليزية** — شرح كل block مهم
+4. **Error Handling في كل مكان** — try/catch، استثناءات واضحة، رسائل خطأ مفيدة
+5. **Type hints في Python** — أضف annotation للـ functions والـ variables المهمة
+6. **لا Magic Numbers** — استخدم constants مسماة واضحة
+7. **DRY Principle** — لا تكرر الكود، استخدم functions وclasses
+
+## طريقة عملك عند طلب مشروع كامل:
+عندما يطلب المستخدم مشروعاً (موقع، API، بوت، تطبيق)، قدّم:
+
+### 1. هيكل المشروع أولاً:
+```
+project-name/
+├── app.py / main.py / index.js
+├── requirements.txt / package.json
+├── config.py
+├── models/ أو routes/ أو components/
+├── templates/ أو static/
+├── tests/
+└── README.md
+```
+
+### 2. ثم كل ملف كامل بالترتيب:
+- الملف الرئيسي أولاً
+- الـ Config والـ Environment
+- الـ Models/Database
+- الـ Routes/Controllers
+- الـ Templates/Frontend
+- الـ Tests
+- الـ README مع تعليمات التشغيل
+
+### 3. في نهاية كل مشروع أضف:
+- كيفية تشغيل المشروع محلياً
+- متغيرات البيئة المطلوبة
+- كيفية الـ Deploy
+
+## عند تحليل الأكواد الموجودة:
+- **اقرأ كل السياق** قبل أي تعديل
+- **حدد المشكلة بدقة** — السطر والسبب والحل
+- **لا تكسر ما يعمل** — فقط صلح المشكلة
+- **اقترح Refactoring** إذا رأيت تحسينات واضحة
+- **نبّه على Security Issues** فوراً إذا وجدت
+
+## أسلوب تقديم الكود:
+- دائماً ```python أو ```javascript أو ```html مع تحديد اللغة
+- أضف تعليقاً في أول الملف يشرح الغرض منه
+- استخدم separators واضحة بين الأقسام: # ─── اسم القسم ──────
+- اكتب docstrings للـ functions المهمة
+
+## عند وجود خطأ أو Bug:
+1. اشرح **لماذا** حدث الخطأ
+2. أعط الحل المباشر مع الكود الكامل
+3. اشرح **كيف تتجنبه** مستقبلاً
+4. قدم test case يثبت أن الحل يعمل
+
+## Production-Level Best Practices التي تطبقها دائماً:
+- Environment variables للـ secrets (لا hardcoded passwords أبداً)
+- Database connection pooling وإغلاق الاتصالات
+- Logging مناسب (ليس فقط print)
+- Input validation وsanitization
+- Rate limiting للـ APIs
+- HTTPS وsecurity headers
+- Graceful error responses (لا stack traces للمستخدم)
+
+تذكر: أنت لا تكتب "أمثلة توضيحية" — أنت تكتب كوداً جاهزاً للتشغيل الفعلي.""",
+
+    'writer': """أنت Wadi الكاتب — محرر لغوي وأديب متمكن. صنعه Anas Wadi ✍️
+
+شخصيتك:
+- تعشق اللغة وتعاملها باحترام وإبداع.
+- تشعر بالفرق بين الكلمة الصحيحة والكلمة المثالية.
+- كل نص تكتبه يحمل روحاً وهوية واضحة.
+
+قواعد الرد:
+- اهتم بالأسلوب والبلاغة والإيقاع الداخلي للجمل.
+- صحح الأخطاء اللغوية بذكاء واشرح السبب.
+- استخدم علامات الترقيم بشكل يخدم المعنى.
+- قدم نصوصاً متماسكة تجعل القارئ يريد الاستمرار.
+- اعرض البديل الأفضل دائماً مع الشرح."""
+}
+
+def get_system_prompt(mode, user_message):
+    if any(q in user_message.lower() for q in IDENTITY_TRIGGERS):
+        return "أجب بالضبط: أنا Wadi، مساعد ذكاء اصطناعي طوّره المهندس Anas Wadi من ليبيا 🇱🇾. لا تضف أي معلومة أخرى."
+    return MODE_PROMPTS.get(mode, MODE_PROMPTS['fast'])
+
+
+# ─── Image Generation ─────────────────────────────────────────
+def generate_image(prompt):
+    clean_prompt = prompt.strip()
+    encoded = requests.utils.quote(clean_prompt)
+    primary_url = (
+        f"https://image.pollinations.ai/prompt/{encoded}"
+        f"?width=1024&height=1024&model=flux&enhance=true&nologo=true"
+        f"&seed={hash(clean_prompt) % 99999}"
+    )
+    fallback_url = (
+        f"https://image.pollinations.ai/prompt/{encoded}"
+        f"?width=1024&height=768&nologo=true"
+    )
+    return primary_url, fallback_url
+
+# ─── Response Formatter (Enhanced) ───────────────────────────
+def format_response(text):
+    import html as html_module
+
+    # Code blocks — preserve content, add language class and copy button support
+    def replace_code_block(m):
+        lang = m.group(1) or 'code'
+        code_content = m.group(2).strip()
+        # Escape HTML inside code blocks
+        escaped = html_module.escape(code_content)
+        return f'<pre data-lang="{lang}"><code class="lang-{lang}">{escaped}</code></pre>'
+
+    text = re.sub(
+        r'```(\w+)?\n(.*?)```',
+        replace_code_block,
+        text, flags=re.DOTALL
+    )
+
+    # Inline code
+    text = re.sub(r'`([^`\n]+?)`', r'<code>\1</code>', text)
+
+    # Headings
+    text = re.sub(r'^### (.+)$', r'<h4>\1</h4>', text, flags=re.MULTILINE)
+    text = re.sub(r'^## (.+)$', r'<h3>\1</h3>', text, flags=re.MULTILINE)
+    text = re.sub(r'^# (.+)$', r'<h2>\1</h2>', text, flags=re.MULTILINE)
+
+    # Bold/Italic
+    text = re.sub(r'\*\*\*(.+?)\*\*\*', r'<strong><em>\1</em></strong>', text)
+    text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
+    text = re.sub(r'\*(.+?)\*', r'<em>\1</em>', text)
+
+    # Horizontal rule
+    text = re.sub(r'^---+$', r'<hr>', text, flags=re.MULTILINE)
+
+    # Unordered lists
+    def convert_list(m):
+        items = re.findall(r'^[-*•] (.+)$', m.group(0), re.MULTILINE)
+        return '<ul>' + ''.join(f'<li>{i}</li>' for i in items) + '</ul>'
+    text = re.sub(r'(^[-*•] .+$\n?)+', convert_list, text, flags=re.MULTILINE)
+
+    # Ordered lists
+    def convert_ol(m):
+        items = re.findall(r'^\d+\. (.+)$', m.group(0), re.MULTILINE)
+        return '<ol>' + ''.join(f'<li>{i}</li>' for i in items) + '</ol>'
+    text = re.sub(r'(^\d+\. .+$\n?)+', convert_ol, text, flags=re.MULTILINE)
+
+    # Paragraphs
+    text = re.sub(r'\n{2,}', '</p><p>', text)
+    text = f'<p>{text}</p>'
+    text = text.replace('<p></p>', '').replace('<p><h', '<h')
+    text = text.replace('</h2></p>', '</h2>').replace('</h3></p>', '</h3>').replace('</h4></p>', '</h4>')
+    text = text.replace('<p><pre', '<pre').replace('</pre></p>', '</pre>')
+    text = text.replace('<p><ul>', '<ul>').replace('</ul></p>', '</ul>')
+    text = text.replace('<p><ol>', '<ol>').replace('</ol></p>', '</ol>')
+    text = text.replace('<p><hr>', '<hr>').replace('<hr></p>', '<hr>')
+
+    allowed_tags = ['h2','h3','h4','p','strong','em','ul','ol','li','code','pre','br','hr']
+    return bleach.clean(text, tags=allowed_tags, attributes={'pre': ['data-lang'], 'code': ['class']}, strip=True)
+
+
+# ─── Routes: Auth ─────────────────────────────────────────────
+@app.route('/login', methods=['GET', 'POST'])
 def login():
-    if request.method == "POST":
-        email    = request.form.get("email", "")
-        password = request.form.get("password", "")
-        # CSRF check
-        token = request.form.get("csrf_token")
-        if not token or token != session.get("_csrf_token"):
-            return render_template_string(AUTH_HTML, mode="login", title="تسجيل الدخول",
-                                          error="رمز CSRF غير صالح")
+    if request.method == 'POST':
+        email = request.form.get('email', '').strip()
+        password = request.form.get('password', '')
+        if not email or not password:
+            return render_template_string(AUTH_HTML, mode='login', title='تسجيل الدخول',
+                                          error='يرجى ملء جميع الحقول')
         user = verify_user(email, password)
         if user:
-            session["user"] = user
-            return redirect(url_for("index"))
-        return render_template_string(AUTH_HTML, mode="login", title="تسجيل الدخول",
-                                      error="البريد الإلكتروني أو كلمة المرور غير صحيحة")
-    return render_template_string(AUTH_HTML, mode="login", title="تسجيل الدخول",
+            session['user'] = {'email': user['email'], 'name': user['name']}
+            return redirect('/')
+        return render_template_string(AUTH_HTML, mode='login', title='تسجيل الدخول',
+                                      error='البريد الإلكتروني أو كلمة المرور غير صحيحة')
+    return render_template_string(AUTH_HTML, mode='login', title='تسجيل الدخول',
                                   error=None, success=None)
 
-@app.route("/register", methods=["GET", "POST"])
+@app.route('/register', methods=['GET', 'POST'])
 def register():
-    if request.method == "POST":
-        name     = request.form.get("name", "").strip()
-        email    = request.form.get("email", "").strip()
-        password = request.form.get("password", "")
-        token    = request.form.get("csrf_token")
-        if not token or token != session.get("_csrf_token"):
-            return render_template_string(AUTH_HTML, mode="register", title="إنشاء حساب",
-                                          error="رمز CSRF غير صالح",
+    if request.method == 'POST':
+        name = request.form.get('name', '').strip()
+        email = request.form.get('email', '').strip()
+        password = request.form.get('password', '')
+        if not name or not email or not password:
+            return render_template_string(AUTH_HTML, mode='register', title='حساب جديد',
+                                          error='يرجى ملء جميع الحقول',
                                           prefill_name=name, prefill_email=email)
         if len(password) < 6:
-            return render_template_string(AUTH_HTML, mode="register", title="إنشاء حساب",
-                                          error="كلمة المرور يجب أن تكون 6 أحرف على الأقل",
+            return render_template_string(AUTH_HTML, mode='register', title='حساب جديد',
+                                          error='كلمة المرور يجب أن تكون 6 أحرف على الأقل',
+                                          prefill_name=name, prefill_email=email)
+        if '@' not in email or '.' not in email.split('@')[-1]:
+            return render_template_string(AUTH_HTML, mode='register', title='حساب جديد',
+                                          error='يرجى إدخال بريد إلكتروني صحيح',
                                           prefill_name=name, prefill_email=email)
         ok, msg = create_user(email, password, name)
         if ok:
-            return render_template_string(AUTH_HTML, mode="login", title="تسجيل الدخول",
-                                          success="تم إنشاء الحساب بنجاح، سجل دخولك الآن",
-                                          error=None)
-        return render_template_string(AUTH_HTML, mode="register", title="إنشاء حساب",
+            session['user'] = {'email': email.lower().strip(), 'name': name}
+            return redirect('/')
+        return render_template_string(AUTH_HTML, mode='register', title='حساب جديد',
                                       error=msg, prefill_name=name, prefill_email=email)
-    return render_template_string(AUTH_HTML, mode="register", title="إنشاء حساب",
+    return render_template_string(AUTH_HTML, mode='register', title='حساب جديد',
                                   error=None, success=None, prefill_name=None, prefill_email=None)
 
-@app.route("/logout")
-@login_required
+@app.route('/logout')
 def logout():
-    session.clear()
-    return redirect(url_for("login"))
+    session.pop('user', None)
+    return redirect('/login')
 
+# ─── Routes: Main ─────────────────────────────────────────────
 @app.route("/")
-@login_required
-def index():
-    user      = session["user"]
-    user_name = user["name"]
-    user_initial = user_name[0].upper() if user_name else "?"
-    if not user.get("onboarding_seen"):
-        update_onboarding_seen(user["email"])
+def home():
+    user = session.get('user', {})
+    user_name = user.get('name', 'مستخدم')
+    user_initial = user_name[0].upper() if user_name else 'U'
     return render_template_string(HTML, user_name=user_name, user_initial=user_initial)
 
-@app.route("/privacy")
-def privacy():
-    return "<h1 style='font-family:sans-serif;text-align:center;margin-top:80px'>سياسة الخصوصية — قريباً</h1>"
-
-# ============================================
-# API Routes
-# ============================================
 @app.route("/api/chats")
-@login_required
 def api_get_chats():
-    user_email = session['user']['email']
-    chats = get_user_chats(user_email)
-    for c in chats:
-        c['created_at'] = str(c['created_at'])
-    return jsonify({"chats": chats})
+    user = session.get('user', {})
+    email = user.get('email', '')
+    if not email:
+        return jsonify({"chats": []})
+    chats_list = get_user_chats(email)
+    for c in chats_list:
+        if c.get('created_at'):
+            c['created_at'] = str(c['created_at'])
+    return jsonify({"chats": chats_list})
 
-# FIX #3: share route MUST be registered BEFORE <chat_id> variable routes
-# otherwise Flask matches /api/chat/share/xxx as chat_id="share"
-@app.route("/api/chat/share/<chat_id>", methods=["POST"])
-@login_required
-@csrf_required
-def api_create_share(chat_id):
-    user_email = session['user']['email']
-    token = create_share_token(chat_id, user_email)
-    if token:
-        share_url = url_for('share_chat', token=token, _external=True)
-        return jsonify({"share_url": share_url})
-    return jsonify({"error": "Failed to create share link"}), 500
-
-@app.route("/api/chat/<chat_id>")
-@login_required
+@app.route("/api/chat/<chat_id>", methods=["GET"])
 def api_get_chat(chat_id):
-    user_email = session['user']['email']
-    messages = get_chat_messages(chat_id, user_email)
+    user = session.get('user', {})
+    email = user.get('email', '')
+    if not email:
+        return jsonify({"messages": []})
+    messages = get_chat_messages(chat_id, email)
     for m in messages:
-        m['created_at'] = str(m['created_at'])
+        if m.get('created_at'):
+            m['created_at'] = str(m['created_at'])
     return jsonify({"messages": messages})
 
 @app.route("/api/chat/<chat_id>", methods=["DELETE"])
-@login_required
 def api_delete_chat(chat_id):
-    user_email = session['user']['email']
-    ok = delete_chat_from_db(chat_id, user_email)
+    user = session.get('user', {})
+    email = user.get('email', '')
+    if not email:
+        return jsonify({"ok": False, "error": "غير مصرح"})
+    ok = delete_chat_from_db(chat_id, email)
     return jsonify({"ok": ok})
 
-@app.route("/share/<token>")
-def share_chat(token):
-    messages = get_shared_chat_by_token(token)
-    if not messages:
-        return "Chat not found", 404
-    return render_template_string("""
-    <!DOCTYPE html>
-    <html dir="rtl" lang="ar">
-    <head>
-        <meta charset="UTF-8">
-        <title>محادثة مشتركة - Anas Wadi</title>
-        <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;700&display=swap" rel="stylesheet">
-        <style>
-            body { background:#050510; color:#e8eaf6; font-family:'Tajawal',sans-serif; max-width:800px; margin:0 auto; padding:20px; }
-            .user-msg { background:linear-gradient(135deg,#00ff94,#00d2ff); color:#000; padding:12px 18px; border-radius:20px 20px 6px 20px; margin:10px 0; max-width:80%; margin-right:auto; }
-            .ai-msg   { background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); padding:14px 18px; border-radius:20px 20px 20px 6px; margin:10px 0; max-width:85%; }
-            .footer   { text-align:center; margin-top:30px; font-size:12px; color:gray; }
-        </style>
-    </head>
-    <body>
-        <h2 style="text-align:center">✨ محادثة مشتركة من Anas Wadi</h2>
-        {% for m in messages %}
-            <div class="user-msg">{{ m.user_message }}</div>
-            <div class="ai-msg">{{ m.ai_response|safe }}</div>
-        {% endfor %}
-        <div class="footer">
-            تمت المشاركة بواسطة مستخدم Anas Wadi |
-            <a href="/" style="color:#00d2ff">جرب المساعد بنفسك</a>
-        </div>
-    </body>
-    </html>
-    """, messages=messages)
-
-@app.route("/api/user/delete", methods=["POST"])
-@login_required
-@csrf_required
-def api_delete_user():
-    email    = session['user']['email']
-    password = request.form.get('password', '')
-    if not password:
-        return jsonify({"error": "كلمة المرور مطلوبة"}), 400
-    ok, msg = delete_user_account(email, password)
-    if ok:
-        session.clear()
-        return jsonify({"ok": True, "message": msg})
-    return jsonify({"error": msg}), 400
-
-# ============================================
-# Chat Endpoints (Streaming & Regular)
-# ============================================
-@app.route("/api/chat/stream", methods=["POST"])
-@login_required
-@limiter.limit("10/minute")
-def chat_stream():
-    if not Config.GROQ_API_KEY:
-        return jsonify({"error": "API key missing"}), 500
-
-    user_message = request.form.get("message", "")
-    mode         = request.form.get("mode", "fast")
-    chat_id      = request.form.get("chat_id", "")
-    history_raw  = request.form.get("history", "[]")
-    file         = request.files.get("file")
-
-    user_info  = session['user']
-    user_email = user_info['email']
-    user_name  = user_info['name']
-
-    if is_prompt_injection(user_message):
-        return jsonify({"error": "Message rejected for security reasons"}), 403
-
-    if mode not in MODE_PROMPTS:
-        mode = 'fast'
-
-    history_limit = 20 if mode == 'coder' else 12
-    max_tokens_map = {'coder':4096,'thinker':3000,'writer':2500,'creative':2000,'funny':1500,'fast':2048}
-    max_tokens = max_tokens_map.get(mode, 2048)
-    messages = [{"role": "system", "content": get_system_prompt(mode, user_message)}]
-
-    try:
-        history_data = json.loads(history_raw)
-        for msg in history_data[-history_limit:]:
-            u = str(msg.get("user", ""))[:2000]
-            a = str(msg.get("rawAi") or msg.get("ai", ""))[:4000]
-            if u and a and a != '__typing__':
-                messages.append({"role": "user",      "content": u})
-                messages.append({"role": "assistant",  "content": a})
-    except Exception:
-        pass
-
-    # ─── Handle file upload ────────────────────────
-    file_name    = None
-    image_url    = None
-    file_context = ""
-    if file and file.filename and allowed_file(file.filename):
-        original_filename = secure_filename(file.filename)
-        ext = original_filename.rsplit('.', 1)[1].lower() if '.' in original_filename else ''
-        if ext in {'png', 'jpg', 'jpeg', 'webp'}:
-            image_url, img_bytes, img_mime = save_file_with_fallback(file, original_filename, ext)
-            file_name = original_filename
-            img_b64 = base64.b64encode(img_bytes).decode('utf-8') if img_bytes else None
-        elif ext == 'pdf':
-            file_context = f"PDF content ({original_filename}):\n{extract_pdf_text(file)}\n\n"
-            file_name = original_filename
-            img_b64 = None
-        elif ext == 'txt':
-            file_context = f"File content ({original_filename}):\n{extract_text_from_txt(file)}\n\n"
-            file_name = original_filename
-            img_b64 = None
-    else:
-        img_b64 = None
-
-    default_msg = "اطلع على هذا الملف" if (file_context or image_url) else "Hello"
-    final_user_message = (file_context + user_message).strip() or default_msg
-
-    if img_b64 and img_mime:
-        messages.append({
-            "role": "user",
-            "content": [
-                {"type": "text", "text": final_user_message or "اوصف هذه الصورة"},
-                {"type": "image_url", "image_url": {"url": f"data:{img_mime};base64,{img_b64}"}}
-            ]
-        })
-        vision_model = 'meta-llama/llama-4-scout-17b-16e-instruct'
-    else:
-        messages.append({"role": "user", "content": final_user_message})
-        vision_model = None
-
-    model_map = {
-        'thinker':  'qwen/qwen3-32b',
-        'coder':    'qwen/qwen3-32b',
-        'writer':   'llama-3.3-70b-versatile',
-        'creative': 'llama-3.3-70b-versatile',
-        'fast':     'llama-3.1-8b-instant',
-        'funny':    'llama-3.1-8b-instant'
-    }
-    model       = vision_model or model_map.get(mode, 'llama-3.1-8b-instant')
-    temperature = {'funny':0.92,'creative':0.88,'writer':0.82,'thinker':0.45,'coder':0.25,'fast':0.72}.get(mode, 0.72)
-
-    def generate():
-        full_response = ""
-        try:
-            with requests.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {Config.GROQ_API_KEY}"},
-                json={
-                    "model": model, "messages": messages,
-                    "max_tokens": max_tokens, "temperature": temperature,
-                    "top_p": 0.92, "stream": True
-                },
-                timeout=90,
-                stream=True
-            ) as resp:
-                for line in resp.iter_lines():
-                    if line:
-                        line = line.decode('utf-8')
-                        if line.startswith('data: '):
-                            data = line[6:]
-                            if data == '[DONE]':
-                                break
-                            try:
-                                chunk   = json.loads(data)
-                                content = chunk['choices'][0]['delta'].get('content', '')
-                                if content:
-                                    full_response += content
-                                    yield f"data: {json.dumps({'delta': content})}\n\n"
-                            except Exception:
-                                pass
-        except Exception as e:
-            app.logger.error(f"Stream error: {str(e)}")
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
-        finally:
-            # FIX #2: Only save if we have both chat_id AND a non-empty response
-            if chat_id and full_response:
-                try:
-                    formatted = format_response(full_response)
-                    save_message(
-                        chat_id, user_email, user_name,
-                        user_message or "(file)",
-                        formatted,
-                        full_response, mode, image_url, file_name
-                    )
-                    # FIX #1: Send the server-rendered HTML so the client
-                    # replaces simpleMarkdown output with the full mistune render.
-                    # FIX #5: Also send image_url so the client can display it
-                    # immediately without waiting for a page reload.
-                    yield f"data: {json.dumps({'done': True, 'formatted': formatted, 'raw': full_response, 'image_url': image_url})}\n\n"
-                except Exception as e:
-                    app.logger.error(f"Failed to save message after stream: {str(e)}")
-        yield "data: [DONE]\n\n"
-
-    return Response(generate(), mimetype='text/event-stream')
-
-
 @app.route("/api/chat", methods=["POST"])
-@login_required
-@limiter.limit("10/minute")
 def chat():
-    if not Config.GROQ_API_KEY:
-        return jsonify({"error": "API key missing"}), 500
+    if not API_KEY:
+        return jsonify({"response": "⚠️ مفتاح API غير مضاف. أضف GROQ_API_KEY في إعدادات Render.", "rawResponse": ""})
 
-    user_message = request.form.get("message", "")
-    mode         = request.form.get("mode", "fast")
-    chat_id      = request.form.get("chat_id", "")
-    history_raw  = request.form.get("history", "[]")
-    file         = request.files.get("file")
+    ip = get_client_ip()
+    if is_rate_limited(ip):
+        return jsonify({"error": "⏱️ أرسلت طلبات كثيرة. انتظر دقيقة ثم حاول مجدداً."})
 
-    user_info  = session['user']
-    user_email = user_info['email']
-    user_name  = user_info['name']
+    user_message = sanitize_input(request.form.get("message", ""))
+    mode = request.form.get("mode", "fast")
+    chat_id = request.form.get("chat_id", "")
+    history_raw = request.form.get("history", "[]")
+    file = request.files.get("file")
+
+    user_info = session.get('user', {})
+    user_email = user_info.get('email', 'anonymous')
+    user_name = user_info.get('name', 'مستخدم')
 
     if is_prompt_injection(user_message):
-        return jsonify({"error": "Message rejected for security reasons"}), 403
+        return jsonify({"response": "⚠️ تم رفض الرسالة لأسباب أمنية.", "rawResponse": ""})
 
     if mode not in MODE_PROMPTS:
         mode = 'fast'
 
+    # Coder mode gets more context history for large projects
     history_limit = 20 if mode == 'coder' else 12
-    max_tokens_map = {'coder':4096,'thinker':3000,'writer':2500,'creative':2000,'funny':1500,'fast':2048}
-    max_tokens = max_tokens_map.get(mode, 2048)
+    # Coder mode gets higher token limit for full file output
+    max_tokens_map = {
+        'coder':    4096,
+        'thinker':  3000,
+        'writer':   2500,
+        'creative': 2000,
+        'funny':    1500,
+        'fast':     2048,
+    }
+
     messages = [{"role": "system", "content": get_system_prompt(mode, user_message)}]
 
     try:
@@ -2882,319 +1985,145 @@ def chat():
             u = str(msg.get("user", ""))[:2000]
             a = str(msg.get("rawAi") or msg.get("ai", ""))[:4000]
             if u and a and a != '__typing__':
-                messages.append({"role": "user",      "content": u})
-                messages.append({"role": "assistant",  "content": a})
-    except Exception:
-        pass
-
-    # ─── Handle file upload ────────────────────────
-    file_name    = None
-    image_url    = None
-    file_context = ""
-    if file and file.filename and allowed_file(file.filename):
-        original_filename = secure_filename(file.filename)
-        ext = original_filename.rsplit('.', 1)[1].lower() if '.' in original_filename else ''
-        if ext in {'png', 'jpg', 'jpeg', 'webp'}:
-            image_url, img_bytes, img_mime = save_file_with_fallback(file, original_filename, ext)
-            file_name = original_filename
-            img_b64 = base64.b64encode(img_bytes).decode('utf-8') if img_bytes else None
-        elif ext == 'pdf':
-            file_context = f"PDF content ({original_filename}):\n{extract_pdf_text(file)}\n\n"
-            file_name = original_filename
-            img_b64 = None
-        elif ext == 'txt':
-            file_context = f"File content ({original_filename}):\n{extract_text_from_txt(file)}\n\n"
-            file_name = original_filename
-            img_b64 = None
-    else:
-        img_b64 = None
-
-    default_msg = "اطلع على هذا الملف" if (file_context or image_url) else "Hello"
-    final_user_message = (file_context + user_message).strip() or default_msg
-
-    # Vision: send image to Groq if available
-    if img_b64 and img_mime:
-        messages.append({
-            "role": "user",
-            "content": [
-                {"type": "text", "text": final_user_message or "اوصف هذه الصورة"},
-                {"type": "image_url", "image_url": {"url": f"data:{img_mime};base64,{img_b64}"}}
-            ]
-        })
-        vision_model = 'meta-llama/llama-4-scout-17b-16e-instruct'
-    else:
-        messages.append({"role": "user", "content": final_user_message})
-        vision_model = None
-
-    model_map = {
-        'thinker':  'qwen/qwen3-32b',
-        'coder':    'qwen/qwen3-32b',
-        'writer':   'llama-3.3-70b-versatile',
-        'creative': 'llama-3.3-70b-versatile',
-        'fast':     'llama-3.1-8b-instant',
-        'funny':    'llama-3.1-8b-instant'
-    }
-    model       = vision_model or model_map.get(mode, 'llama-3.1-8b-instant')
-    temperature = {'funny':0.92,'creative':0.88,'writer':0.82,'thinker':0.45,'coder':0.25,'fast':0.72}.get(mode, 0.72)
-
-    try:
-        resp = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {Config.GROQ_API_KEY}"},
-            json={
-                "model": model, "messages": messages,
-                "max_tokens": max_tokens, "temperature": temperature, "top_p": 0.92
-            },
-            timeout=60
-        )
-        if resp.status_code == 200:
-            data      = resp.json()
-            raw       = data['choices'][0]['message']['content']
-            formatted = format_response(raw)
-            # FIX #6: Only generate an image URL when in creative mode with image keywords;
-            # image generation URLs from Pollinations are ephemeral — log a warning.
-            image_gen_url = None
-            if mode == 'creative' and any(kw in user_message for kw in ('رسم', 'صورة', 'توليد')):
-                eng_prompt = re.sub(r'ارسم|صورة|توليد', '', user_message).strip()
-                image_gen_url, _ = generate_image(eng_prompt)
-                app.logger.warning(
-                    "Generated ephemeral image URL saved to DB — consider downloading and caching."
-                )
-            final_image_url = image_url or image_gen_url
-            if chat_id:
-                save_message(
-                    chat_id, user_email, user_name,
-                    user_message, formatted, raw, mode,
-                    final_image_url, file_name
-                )
-            return jsonify({
-                "response":  formatted,
-                "raw":       raw,
-                "image_url": final_image_url
-            })
-        else:
-            return jsonify({"error": f"Groq API error {resp.status_code}"}), 500
-    except Exception as e:
-        app.logger.error(f"Chat error: {str(e)}")
-        return jsonify({"error": f"Connection error: {str(e)}"}), 500
-
-# ============================================
-# Celery Tasks
-# ============================================
-@celery.task(bind=True, max_retries=2)
-def process_heavy_request(
-    self,
-    messages: List[Dict],
-    model: str,
-    temperature: float,
-    max_tokens: int,
-    chat_id: str,
-    user_email: str,
-    user_name: str,
-    user_message: str,
-    mode: str,
-    image_url: Optional[str] = None,
-    file_name: Optional[str] = None,
-) -> Optional[str]:
-    """
-    FIX #2 (Celery): Background task for heavy modes (thinker, coder).
-    Saves the result directly to the DB when done.
-    Use /api/chat/async to submit; poll /api/task/<task_id> for status.
-    """
-    try:
-        resp = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {Config.GROQ_API_KEY}"},
-            json={
-                "model": model, "messages": messages,
-                "max_tokens": max_tokens, "temperature": temperature
-            },
-            timeout=120
-        )
-        if resp.status_code == 200:
-            raw       = resp.json()['choices'][0]['message']['content']
-            formatted = format_response(raw)
-            save_message(chat_id, user_email, user_name, user_message,
-                         formatted, raw, mode, image_url, file_name)
-            return formatted
-        app.logger.error(f"Celery Groq error: {resp.status_code}")
-        return None
-    except Exception as exc:
-        app.logger.error(f"Celery task error: {str(exc)}")
-        # Exponential backoff: المحاولة 1 بعد 5 ثوانٍ، المحاولة 2 بعد 10 ثوانٍ
-        raise self.retry(exc=exc, countdown=5 * (2 ** self.request.retries))
-
-@app.route("/api/chat/async", methods=["POST"])
-@login_required
-@limiter.limit("5/minute")
-def chat_async():
-    """Submit a heavy request (thinker/coder) to Celery and return a task_id."""
-    if not Config.GROQ_API_KEY:
-        return jsonify({"error": "API key missing"}), 500
-
-    user_message = request.form.get("message", "")
-    mode         = request.form.get("mode", "thinker")
-    chat_id      = request.form.get("chat_id", "")
-    history_raw  = request.form.get("history", "[]")
-
-    if mode not in ('thinker', 'coder'):
-        return jsonify({"error": "Async route only supports thinker / coder modes"}), 400
-    if is_prompt_injection(user_message):
-        return jsonify({"error": "Message rejected for security reasons"}), 403
-    if not chat_id:
-        return jsonify({"error": "chat_id required"}), 400
-
-    user_info  = session['user']
-    user_email = user_info['email']
-    user_name  = user_info['name']
-
-    max_tokens_map = {'coder': 4096, 'thinker': 3000}
-    max_tokens = max_tokens_map[mode]
-    messages   = [{"role": "system", "content": get_system_prompt(mode, user_message)}]
-
-    try:
-        history_data = json.loads(history_raw)
-        for msg in history_data[-20:]:
-            u = str(msg.get("user", ""))[:2000]
-            a = str(msg.get("rawAi") or msg.get("ai", ""))[:4000]
-            if u and a and a != '__typing__':
-                messages.append({"role": "user",     "content": u})
+                messages.append({"role": "user", "content": u})
                 messages.append({"role": "assistant", "content": a})
     except Exception:
         pass
 
-    messages.append({"role": "user", "content": user_message or "Hello"})
+    # Image generation
+    is_image_request = 'ارسم' in user_message or 'صورة' in user_message or user_message.startswith('draw')
+    if is_image_request and ('ارسم' in user_message or 'صورة' in user_message):
+        prompt = user_message.replace('ارسم صورة:', '').replace('ارسم:', '').replace('ارسم', '').replace('صورة', '').strip()
+        if not prompt:
+            prompt = user_message
+        primary_url, _ = generate_image(prompt)
+        response_text = f"🎨 تم توليد الصورة!\n**الوصف:** {prompt}\n\n_انقر على الصورة لعرضها بحجمها الكامل_"
+        raw_text = f"تم توليد صورة: {prompt}"
+        if chat_id:
+            save_message(chat_id, user_email, user_name, user_message, response_text, raw_text, mode, image_url=primary_url)
+        return jsonify({"response": response_text, "rawResponse": raw_text, "imageUrl": primary_url})
 
-    model_map   = {'thinker': 'qwen/qwen3-32b', 'coder': 'qwen/qwen3-32b'}
-    temperature = {'thinker': 0.45, 'coder': 0.25}[mode]
+    # File handling
+    file_name = None
+    if file:
+        file_name = file.filename
+        fname = file.filename.lower()
+        if fname.endswith('.pdf'):
+            pdf_text = extract_pdf_text(file)
+            user_message = f"**محتوى ملف PDF:**\n{pdf_text}\n\n**طلب المستخدم:** {user_message or 'لخص هذا الملف بالتفصيل'}"
+        elif file.content_type and file.content_type.startswith('image/'):
+            img_bytes = file.read()
+            if len(img_bytes) > 10 * 1024 * 1024:
+                return jsonify({"error": "⚠️ حجم الصورة كبير جداً (الحد الأقصى 10MB)"})
+            img_b64 = base64.b64encode(img_bytes).decode()
+            messages.append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_message or "حلل هذه الصورة بالتفصيل"},
+                    {"type": "image_url", "image_url": {"url": f"data:{file.content_type};base64,{img_b64}"}}
+                ]
+            })
+            try:
+                resp = requests.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+                    json={"model": "meta-llama/llama-4-scout-17b-16e-instruct", "messages": messages, "max_tokens": 2048},
+                    timeout=60
+                )
+                result = resp.json()
+                raw = result["choices"][0]["message"]["content"] if resp.ok else "خطأ في تحليل الصورة"
+                formatted = format_response(raw)
+                if chat_id:
+                    save_message(chat_id, user_email, user_name, user_message or 'تحليل صورة', formatted, raw, mode, file_name=file_name)
+                return jsonify({"response": formatted, "rawResponse": raw})
+            except Exception as e:
+                return jsonify({"response": f"⚠️ خطأ: {str(e)}", "rawResponse": ""})
 
-    task = process_heavy_request.delay(
-        messages, model_map[mode], temperature, max_tokens,
-        chat_id, user_email, user_name, user_message, mode
-    )
-    return jsonify({"task_id": task.id})
+    model_map = {
+        'thinker':  'qwen/qwen3-32b',
+        'coder':    'qwen/qwen3-32b',
+        'writer':   'llama-3.3-70b-versatile',
+        'creative': 'llama-3.3-70b-versatile',
+        'fast':     'llama-3.1-8b-instant',
+        'funny':    'llama-3.1-8b-instant',
+    }
+    # Fallback if Qwen3 hits rate limit
+    fallback_map = {
+        'qwen/qwen3-32b': 'llama-3.3-70b-versatile',
+    }
+    temp_map = {
+        'funny':    0.92,
+        'creative': 0.88,
+        'writer':   0.82,
+        'thinker':  0.45,
+        'coder':    0.25,
+        'fast':     0.72,
+    }
+    model = model_map.get(mode, 'llama-3.1-8b-instant')
+    temperature = temp_map.get(mode, 0.72)
+    max_tokens = max_tokens_map.get(mode, 2048)
 
-@app.route("/api/task/<task_id>")
-@login_required
-def task_status(task_id):
-    """Poll Celery task status."""
-    from celery.result import AsyncResult
-    result = AsyncResult(task_id, app=celery)
-    if result.state == 'SUCCESS':
-        return jsonify({"status": "done", "response": result.result})
-    if result.state == 'FAILURE':
-        return jsonify({"status": "error", "error": str(result.info)})
-    return jsonify({"status": result.state.lower()})
+    # Qwen3: use reasoning_effort=none to save tokens (still smarter than llama)
+    extra_params = {}
+    if model == 'qwen/qwen3-32b':
+        extra_params['reasoning_effort'] = 'none'
 
-# ============================================
-# Static Files & Service Worker
-# ============================================
-@app.route('/uploads/<filename>')
-def uploaded_file(filename):
-    # Serve from Supabase CDN if configured (persistent, fast)
-    if Config.SUPABASE_URL and Config.SUPABASE_KEY:
-        public_url = f"{Config.SUPABASE_URL}/storage/v1/object/public/{Config.SUPABASE_BUCKET}/{filename}"
-        return redirect(public_url, 301)
-    # Fallback: local disk (ephemeral on Render free tier)
-    return send_from_directory(Config.UPLOAD_FOLDER, filename)
+    messages.append({"role": "user", "content": user_message or "مرحبا"})
 
-@app.route('/sw.js')
-def service_worker():
-    # FIX #8: /static/offline.html was in urlsToCache but doesn't exist,
-    # causing SW install to fail. Cache only '/' until offline.html is created.
-    return Response("""
-const CACHE_NAME = 'anas-wadi-v1';
-const urlsToCache = ['/'];
-self.addEventListener('install', event => {
-    event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(urlsToCache)));
-});
-self.addEventListener('fetch', event => {
-    event.respondWith(
-        fetch(event.request).catch(() =>
-            caches.match(event.request).then(response => response || caches.match('/'))
+    def call_api(m):
+        return requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": m, "messages": messages, "max_tokens": max_tokens,
+                "temperature": temperature, "top_p": 0.92, "stream": False,
+                **extra_params
+            },
+            timeout=90
         )
-    );
-});
-""", mimetype='application/javascript')
 
-@app.route('/manifest.json')
-def manifest():
-    return Response(json.dumps({
-        "name":             "Anas Wadi AI",
-        "short_name":       "AnasWadi",
-        "start_url":        "/",
-        "display":          "standalone",
-        "theme_color":      "#050510",
-        "background_color": "#050510",
-        "icons":            []
-    }), mimetype='application/manifest+json')
-
-@app.route("/api/csrf-token")
-def get_csrf_token():
-    """يُرجع CSRF token جديد — يُستخدم من JS عند انتهاء الـ session"""
-    return jsonify({"csrf_token": generate_csrf_token()})
-
-# ============================================
-# Health Check
-# ============================================
-@app.route("/ping")
-def ping():
-    """Lightweight endpoint for UptimeRobot keep-alive monitoring"""
-    return "pong", 200
-
-@app.route("/health")
-def health_check():
-    """
-    نقطة فحص صحة الخدمات — مفيدة لـ Render / Railway / Kubernetes.
-    تفحص الاتصال بـ PostgreSQL وRedis وترجع حالة كل منهما.
-    """
-    status = {"status": "ok", "db": "ok", "redis": "ok"}
-    http_status = 200
-
-    # فحص قاعدة البيانات
     try:
-        conn = get_db_connection()
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1")
-        return_db_connection(conn)
-    except Exception as e:
-        status["db"] = f"error: {str(e)}"
-        status["status"] = "degraded"
-        http_status = 503
-
-    # فحص Redis (اختياري — فقط عند تفعيله)
-    try:
-        r = init_redis()
-        if r is not None:
-            r.ping()
+        resp = call_api(model)
+        # Auto-fallback if rate limited
+        if not resp.ok and resp.json().get('error', {}).get('code') == 'rate_limit_exceeded':
+            fallback = fallback_map.get(model)
+            if fallback:
+                extra_params.clear()
+                resp = call_api(fallback)
+        result = resp.json()
+        if resp.ok:
+            raw = result["choices"][0]["message"]["content"]
         else:
-            status["redis"] = "not configured"
+            err_msg = result.get('error', {}).get('message', 'خطأ غير معروف')
+            return jsonify({"response": f"⚠️ خطأ: {err_msg}", "rawResponse": ""})
+    except requests.Timeout:
+        return jsonify({"response": "⏱️ انتهت مهلة الاتصال. حاول مجدداً.", "rawResponse": ""})
     except Exception as e:
-        status["redis"] = f"error: {str(e)}"
-        # لا نضع degraded لأن Redis اختياري في هذا الإعداد
-        # status["status"] = "degraded"
+        return jsonify({"response": f"⚠️ خطأ في الاتصال: {str(e)}", "rawResponse": ""})
 
-    return jsonify(status), http_status
+    formatted = format_response(raw)
+    if chat_id:
+        save_message(
+            chat_id=chat_id, user_email=user_email, user_name=user_name,
+            user_message=request.form.get("message", ""),
+            ai_response=formatted, raw_ai=raw, mode=mode, file_name=file_name
+        )
+    return jsonify({"response": formatted, "rawResponse": raw})
 
-# ============================================
-# Error Handlers
-# ============================================
-@app.errorhandler(404)
-def not_found(e):
-    return jsonify({"error": "Not found"}), 404
 
-@app.errorhandler(429)
-def ratelimit_handler(e):
-    return jsonify({"error": "Too many requests. Please slow down."}), 429
+def extract_pdf_text(pdf_file):
+    try:
+        reader = PyPDF2.PdfReader(io.BytesIO(pdf_file.read()))
+        text = ""
+        for page in reader.pages[:20]:
+            t = page.extract_text()
+            if t:
+                text += t + "\n"
+        return text[:15000]
+    except Exception as e:
+        return f"خطأ في قراءة PDF: {str(e)}"
 
-@app.errorhandler(500)
-def internal_error(e):
-    app.logger.error(f"Server error: {str(e)}")
-    return jsonify({"error": "Internal server error"}), 500
 
-# ============================================
-# Main Entry
-# ============================================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
