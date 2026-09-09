@@ -1,0 +1,382 @@
+import io
+import base64
+import json
+
+from flask import Blueprint, request, jsonify, session, Response, stream_with_context
+
+from app.config import Config
+from app.extensions import limiter, log
+from app.db import (
+    get_user_chats, get_chat_messages, get_chat_history_for_context,
+    delete_chat_from_db, save_message, try_consume_daily_usage,
+)
+from app.security import sanitize_input, is_prompt_injection
+from app.ai_service import (
+    MODE_PROMPTS, get_system_prompt, generate_image, format_response,
+    extract_pdf_text, stream_groq_completion, call_vision_model,
+    is_image_generation_request, extract_image_prompt,
+    transcribe_audio, synthesize_speech, strip_markdown_for_speech, split_text_for_tts,
+    supports_builtin_tools,
+)
+from app.storage import upload_image, get_signed_url, persist_generated_image
+from app.memory import maybe_summarize_async
+from app.rag import search_relevant_chunks
+
+bp = Blueprint('api', __name__, url_prefix='/api')
+
+
+def _sse(event_type, **kwargs):
+    payload = {"type": event_type, **kwargs}
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+@bp.route("/chats")
+def api_get_chats():
+    user = session.get('user', {})
+    email = user.get('email', '')
+    if not email:
+        return jsonify({"chats": []})
+    chats = get_user_chats(email, limit=Config.CHAT_LIST_FETCH_LIMIT)
+    for c in chats:
+        if c.get('created_at'):
+            c['created_at'] = str(c['created_at'])
+    return jsonify({"chats": chats})
+
+
+@bp.route("/chat/<chat_id>", methods=["GET"])
+def api_get_chat(chat_id):
+    user = session.get('user', {})
+    email = user.get('email', '')
+    if not email:
+        return jsonify({"messages": []})
+    messages = get_chat_messages(chat_id, email, limit=Config.CHAT_DISPLAY_FETCH_LIMIT)
+    for m in messages:
+        if m.get('created_at'):
+            m['created_at'] = str(m['created_at'])
+        # الرابط الموقّت يُولَّد من جديد بكل قراءة — لا نخزّن رابطاً
+        # ثابتاً بقاعدة البيانات لأن روابط الباكت الخاص تنتهي صلاحيتها.
+        if m.get('uploaded_image_path'):
+            m['uploaded_image_url'] = get_signed_url(m['uploaded_image_path'])
+    return jsonify({"messages": messages})
+
+
+@bp.route("/chat/<chat_id>", methods=["DELETE"])
+def api_delete_chat(chat_id):
+    user = session.get('user', {})
+    email = user.get('email', '')
+    if not email:
+        return jsonify({"ok": False, "error": "غير مصرح"})
+    ok = delete_chat_from_db(chat_id, email)
+    return jsonify({"ok": ok})
+
+
+@bp.route("/chat", methods=["POST"])
+@limiter.limit(Config.CHAT_RATE_LIMIT)
+def chat():
+    """
+    كل الردود (نجاح أو خطأ داخلي) تُرسل بصيغة SSE موحّدة حتى يستطيع
+    الفرونت إند التعامل معها بمستهلك واحد. الاستثناء الوحيد: 429
+    (تجاوز حد المعدل) الذي يرجّعه Flask-Limiter كـ JSON عادي — والفرونت
+    إند مصمم للتعامل مع الحالتين.
+    """
+    if not Config.GROQ_API_KEY:
+        def _no_key():
+            yield _sse('done', response="⚠️ مفتاح API غير مضاف. أضف GROQ_API_KEY في إعدادات Render.",
+                       rawResponse="", id=None)
+        return Response(_no_key(), mimetype='text/event-stream')
+
+    original_raw_message = request.form.get("message", "")
+    user_message = sanitize_input(original_raw_message)
+    mode = request.form.get("mode", "fast")
+    chat_id = request.form.get("chat_id", "")
+    regenerate_message_id = request.form.get("regenerate_message_id", type=int)
+    file = request.files.get("file")
+
+    user_info = session.get('user', {})
+    user_email = user_info.get('email', 'anonymous')
+    user_name = user_info.get('name', 'مستخدم')
+
+    # حصة استخدام يومية لكل فرد عائلة — حماية من استنزاف حد Groq
+    # المجاني المشترك بين كل حسابات العائلة. الفحص هنا عمداً قبل أي
+    # قراءة ملف أو استدعاء فعلي — نرفض بأرخص تكلفة ممكنة. الأدمن
+    # مستثنى دائماً (هو صاحب/مراقب المفتاح، يحتاج وصولاً غير مقيّد).
+    if (Config.ENABLE_DAILY_QUOTA and user_email != 'anonymous'
+            and (user_email or '').strip().lower() not in Config.ADMIN_EMAILS):
+        if not try_consume_daily_usage(user_email, Config.DAILY_MESSAGE_LIMIT):
+            def _quota_exceeded():
+                yield _sse(
+                    'done',
+                    response=f"⚠️ وصلت للحد اليومي ({Config.DAILY_MESSAGE_LIMIT} رسالة). "
+                             "جرّب مجدداً بكرة، أو كلّم المسؤول لو تحتاج حداً أعلى.",
+                    rawResponse="", id=None
+                )
+            return Response(_quota_exceeded(), mimetype='text/event-stream')
+
+    if is_prompt_injection(user_message):
+        def _rejected():
+            yield _sse('done', response="⚠️ تم رفض الرسالة لأسباب أمنية.", rawResponse="", id=None)
+        return Response(_rejected(), mimetype='text/event-stream')
+
+    if mode not in MODE_PROMPTS:
+        mode = 'fast'
+
+    # نقرأ الملف هنا (قبل بدء البث) لأن request لن يبقى صالحاً للقراءة
+    # بأمان داخل المولّد إلا عبر stream_with_context.
+    file_name = None
+    file_bytes = None
+    file_content_type = None
+    if file:
+        file_name = file.filename
+        file_content_type = file.content_type
+        file_bytes = file.read()
+
+    history_limit = 20 if mode == 'coder' else 12
+    messages = [{"role": "system", "content": get_system_prompt(mode, user_message)}]
+    if chat_id and user_email != 'anonymous':
+        messages.extend(
+            get_chat_history_for_context(chat_id, user_email, history_limit, before_id=regenerate_message_id)
+        )
+
+    # وجود ملف مرفق يُبطل نية توليد الصورة كلياً — تحليل الملف له
+    # الأولوية دائماً (يمنع "حلل هذه الصورة" + صورة مرفوعة من التحوّل
+    # الخاطئ لطلب توليد صورة جديدة).
+    is_image_request = is_image_generation_request(user_message, has_file=(file_bytes is not None))
+
+    def generate():
+        # ── مسار 1: توليد صورة ──
+        if is_image_request:
+            prompt = extract_image_prompt(user_message)
+            primary_url, _ = generate_image(prompt)
+            # نخزّن الصورة بمخزننا الخاص لو التخزين مفعّل — حتى لا تعتمد
+            # المحادثات القديمة على استقرار pollinations.ai على المدى
+            # الطويل. لو فشل التخزين، نرجع للرابط الأصلي بهدوء.
+            display_url = (persist_generated_image(primary_url, user_email, chat_id)
+                            if chat_id else None) or primary_url
+            response_text = f"🎨 تم توليد الصورة!\n**الوصف:** {prompt}\n\n_انقر على الصورة لعرضها بحجمها الكامل_"
+            raw_text = f"تم توليد صورة: {prompt}"
+            new_id = None
+            if chat_id:
+                new_id = save_message(chat_id, user_email, user_name, user_message,
+                                       response_text, raw_text, mode, image_url=display_url)
+            yield _sse('done', response=response_text, rawResponse=raw_text, imageUrl=display_url, id=new_id)
+            return
+
+        local_user_message = user_message
+
+        # ── مسار 2: ملف مرفق ──
+        if file_bytes is not None:
+            fname_lower = (file_name or '').lower()
+            if fname_lower.endswith('.pdf'):
+                if len(file_bytes) > Config.MAX_PDF_SIZE:
+                    yield _sse('error', error='⚠️ حجم ملف PDF كبير جداً (الحد الأقصى 15MB)')
+                    return
+                pdf_text = extract_pdf_text(io.BytesIO(file_bytes))
+                local_user_message = (
+                    f"**محتوى ملف PDF:**\n{pdf_text}\n\n"
+                    f"**طلب المستخدم:** {local_user_message or 'لخص هذا الملف بالتفصيل'}"
+                )
+            elif file_content_type and file_content_type.startswith('image/'):
+                if len(file_bytes) > Config.MAX_IMAGE_SIZE:
+                    yield _sse('error', error='⚠️ حجم الصورة كبير جداً (الحد الأقصى 10MB)')
+                    return
+                img_b64 = base64.b64encode(file_bytes).decode()
+                vision_messages = messages + [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": local_user_message or "حلل هذه الصورة بالتفصيل"},
+                        {"type": "image_url", "image_url": {"url": f"data:{file_content_type};base64,{img_b64}"}}
+                    ]
+                }]
+                raw, err = call_vision_model(vision_messages)
+                if err:
+                    yield _sse('error', error=f'⚠️ خطأ: {err}')
+                    return
+                formatted = format_response(raw)
+                # نرفع الصورة المرفوعة لمخزن خاص حتى تبقى ظاهرة عند فتح
+                # المحادثة لاحقاً (كانت تُفقد كلياً، فقط اسم الملف يبقى).
+                storage_path = upload_image(user_email, chat_id, file_bytes, file_content_type) if chat_id else None
+                display_upload_url = get_signed_url(storage_path) if storage_path else None
+                new_id = None
+                if chat_id:
+                    new_id = save_message(chat_id, user_email, user_name,
+                                           local_user_message or 'تحليل صورة', formatted, raw,
+                                           mode, file_name=file_name, uploaded_image_path=storage_path)
+                yield _sse('done', response=formatted, rawResponse=raw, id=new_id,
+                           uploadedImageUrl=display_upload_url)
+                return
+
+        # ── مسار 3: نص عادي — بث حقيقي حرفاً بحرف ──
+        # الذاكرة العائلية (RAG): نبحث بمعنى السؤال الأصلي (لا النص
+        # المُطعَّم بمحتوى PDF لو وُجد) عن أقرب مقاطع من وثائق العائلة
+        # المخزَّنة، ونضيفها كسياق إضافي فقط لو كانت ذات علاقة فعلية.
+        # فشل هذي الخطوة (بدون قاعدة بيانات، أو الميزة معطّلة، أو أي
+        # خطأ آخر) لا يجب أن يمنع الرد إطلاقاً — نفس فلسفة ملخص
+        # المحادثة بـ get_chat_history_for_context تماماً.
+        if Config.ENABLE_RAG:
+            try:
+                relevant_chunks = search_relevant_chunks(user_message)
+                if relevant_chunks:
+                    context_text = "\n\n".join(f"- {c['content']}" for c in relevant_chunks)
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "معلومات من ذاكرة العائلة المخزَّنة قد تفيد بالإجابة "
+                            f"(استخدمها فقط لو ذات علاقة فعلية بالسؤال):\n{context_text}"
+                        )
+                    })
+            except Exception as e:
+                log.error(f"تعذر جلب سياق الذاكرة العائلية (تم تجاهله بأمان): {e}")
+
+        model = Config.GROQ_MODELS.get(mode, Config.GROQ_MODELS['fast'])
+        temperature = Config.TEMP_MAP.get(mode, 0.72)
+        max_tokens = Config.MAX_TOKENS_MAP.get(mode, 2048)
+        extra_params = {'reasoning_effort': Config.REASONING_MAP.get(mode, 'low')}
+        # أدوات Groq المدمجة (بحث ويب حي + تنفيذ كود فعلي) — الموديل نفسه
+        # يقرر إذا يحتاجها لهذي الرسالة بالذات (tool_choice="auto")، ما
+        # نفرضها بكل رد. تعمل فقط مع gpt-oss (كل موديلاتنا الحالية).
+        if Config.ENABLE_BUILTIN_TOOLS and supports_builtin_tools(model):
+            extra_params['tools'] = Config.BUILTIN_TOOLS
+            extra_params['tool_choice'] = 'auto'
+        fallback_model = Config.GROQ_FALLBACK_MODEL.get(model)
+
+        final_messages = messages + [{"role": "user", "content": local_user_message or "مرحبا"}]
+
+        full_raw = ""
+        had_error = False
+        for kind, data in stream_groq_completion(model, final_messages, temperature, max_tokens,
+                                                   extra_params, fallback_model):
+            if kind == 'chunk':
+                full_raw += data
+                yield _sse('chunk', content=data)
+            elif kind == 'error':
+                had_error = True
+                yield _sse('error', error=data)
+            elif kind == 'done':
+                full_raw = data or full_raw
+
+        if had_error:
+            return
+
+        formatted = format_response(full_raw)
+        new_id = None
+        if chat_id:
+            new_id = save_message(
+                chat_id=chat_id, user_email=user_email, user_name=user_name,
+                user_message=original_raw_message, ai_response=formatted,
+                raw_ai=full_raw, mode=mode, file_name=file_name
+            )
+        yield _sse('done', response=formatted, rawResponse=full_raw, id=new_id)
+
+        # ذاكرة طويلة المدى: يُطلَق بعد إرسال الرد للمستخدم، وبخيط خلفي
+        # معزول تماماً. طبقة حماية إضافية هنا (فوق حماية app/memory.py
+        # الداخلية): هذا استدعاء بعد آخر yield في المولّد — أي استثناء
+        # غير متوقع بهذه النقطة قد يقطع الاتصال ويُفسد رداً وصل للمستخدم
+        # فعلاً بنجاح، حتى لو المشكلة لا علاقة لها بالرد نفسه إطلاقاً.
+        if chat_id:
+            try:
+                maybe_summarize_async(chat_id, user_email)
+            except Exception as e:
+                log.error(f"تعذر إطلاق مهمة تلخيص الذاكرة الطويلة (تم تجاهله، الرد وصل بنجاح): {e}")
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
+    )
+
+
+# ─── الصوت: تحويل كلام لنص (STT) ─────────────────────────────────
+@bp.route("/transcribe", methods=["POST"])
+@limiter.limit(Config.VOICE_RATE_LIMIT)
+def transcribe():
+    """
+    مسار مستقل تماماً عن /api/chat عمداً — فشل هنا (شبكة، صيغة صوت
+    غير مدعومة، انتهاء صلاحية) لا يجب أن يؤثر على الشات النصي إطلاقاً،
+    وهما مسارين منفصلين بالكامل بلا أي حالة مشتركة بينهما.
+    """
+    if not Config.GROQ_API_KEY:
+        return jsonify({"error": "⚠️ مفتاح API غير مضاف."})
+
+    audio_file = request.files.get("audio")
+    if not audio_file:
+        return jsonify({"error": "⚠️ لم يتم إرفاق أي تسجيل صوتي"})
+
+    audio_bytes = audio_file.read()
+    if not audio_bytes:
+        return jsonify({"error": "⚠️ التسجيل فارغ"})
+    if len(audio_bytes) > Config.MAX_AUDIO_SIZE:
+        return jsonify({"error": "⚠️ التسجيل الصوتي كبير جداً (الحد الأقصى 15MB)"})
+
+    text, err = transcribe_audio(audio_bytes, audio_file.filename, audio_file.content_type)
+    if err:
+        return jsonify({"error": f"⚠️ تعذر تحويل الصوت لنص: {err}"})
+    return jsonify({"text": text})
+
+
+# ─── الصوت: تحويل نص لكلام (TTS) ─────────────────────────────────
+@bp.route("/speak", methods=["POST"])
+@limiter.limit(Config.VOICE_RATE_LIMIT)
+def speak():
+    """
+    بث حي (SSE) — كل مقطع صوت يوصل للواجهة فور توليده، بدل انتظار
+    توليد كل المقاطع ثم إرسالها دفعة واحدة (كانت هذي أكبر سبب إحساس
+    "بطيء" بالصوت: رد متوسط الطول = ثوانٍ صمت كامل قبل أول صوت).
+    Orpheus محدود بـ200 حرف/طلب، فأي رد أطول يُقسَّم لعدة استدعاءات
+    متتالية للخادم — والفرونت إند يشغّل كل مقطع فور وصوله.
+    """
+    if not Config.GROQ_API_KEY:
+        def _no_key():
+            yield _sse('error', error="⚠️ مفتاح API غير مضاف.")
+        return Response(_no_key(), mimetype='text/event-stream')
+
+    raw_text = (request.form.get("text") or "").strip()
+    if not raw_text:
+        def _empty():
+            yield _sse('error', error="⚠️ لا يوجد نص لتحويله لصوت")
+        return Response(_empty(), mimetype='text/event-stream')
+
+    lang = request.form.get("lang", "ar")
+    if lang not in ("ar", "en"):
+        lang = "ar"
+
+    # الصوت: نتحقق من قائمة الأصوات الصالحة لهذي اللغة بـconfig.py قبل
+    # إرساله لـGroq — لا نثق بأي قيمة من الواجهة بلا تدقيق.
+    valid_voices = Config.TTS_VOICES_AR if lang == 'ar' else Config.TTS_VOICES_EN
+    requested_voice = (request.form.get("voice") or "").strip().lower()
+    voice = requested_voice if requested_voice in valid_voices else None
+
+    # حد إجمالي دفاعي قبل التقسيم — يمنع نصاً ضخماً من توليد عشرات
+    # الاستدعاءات (تكلفة/زمن) بطلب واحد.
+    raw_text = raw_text[:Config.TTS_MAX_INPUT_LENGTH]
+
+    clean_text = strip_markdown_for_speech(raw_text)
+    if not clean_text:
+        def _invalid():
+            yield _sse('error', error="⚠️ لا يوجد نص صالح للنطق بعد إزالة التنسيق")
+        return Response(_invalid(), mimetype='text/event-stream')
+
+    chunks = split_text_for_tts(clean_text)
+    if not chunks:
+        def _fail_chunk():
+            yield _sse('error', error="⚠️ تعذر تجهيز النص للنطق")
+        return Response(_fail_chunk(), mimetype='text/event-stream')
+
+    def generate():
+        got_any = False
+        for idx, chunk in enumerate(chunks):
+            audio_bytes, err = synthesize_speech(chunk, lang, voice=voice)
+            if err:
+                # لو نجح مقطع أو أكتر قبل الفشل، الفرونت إند خلاص شغّلهم
+                # (أو بطريقه) — 'error' هنا فقط لو الفشل بأول مقطع، وإلا
+                # 'done' مع partial=True حتى ما نلغي إشعار خطأ فوق صوت
+                # شغال فعلاً.
+                if got_any:
+                    yield _sse('done', partial=True)
+                else:
+                    yield _sse('error', error=f"⚠️ تعذر توليد الصوت: {err}")
+                return
+            got_any = True
+            yield _sse('clip', index=idx, total=len(chunks), audio=base64.b64encode(audio_bytes).decode())
+        yield _sse('done', partial=False)
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')

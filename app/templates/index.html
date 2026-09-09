@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html dir="rtl" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#050510">
+<meta name="csrf-token" content="{{ csrf_token() }}">
+<title>✨ Anas Wadi ✨</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700;900&family=Cairo:wght@300;400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+
+<!-- Stars background -->
+<div class="stars" id="stars"></div>
+
+<!-- Sidebar overlay -->
+<div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
+
+<!-- ═══════ SIDEBAR ═══════ -->
+<div class="sidebar" id="sidebar">
+  <!-- User profile -->
+  <div class="sidebar-profile">
+    <div class="sidebar-avatar" id="sidebarAvatar">{{ user_initial }}</div>
+    <div class="sidebar-profile-info">
+      <div class="sidebar-profile-name" id="sidebarName">{{ user_name }}</div>
+      <div class="sidebar-profile-badge"><i class="fa-solid fa-circle" style="font-size:7px;color:#00ff94"></i> متصل الآن</div>
+    </div>
+  </div>
+
+  <!-- New chat button -->
+  <div class="sidebar-actions">
+    <button class="new-chat-btn" onclick="newChat()">
+      <i class="fa-solid fa-plus"></i> محادثة جديدة
+    </button>
+  </div>
+
+  <!-- Chat list -->
+  <div class="sidebar-label">المحادثات السابقة</div>
+  <div class="chat-list-scroll">
+    <div id="chatList">
+      <div style="color:var(--text-dim);font-size:13px;text-align:center;padding:20px">
+        <div class="typing-indicator" style="justify-content:center;margin-bottom:8px"><span></span><span></span><span></span></div>
+        جاري التحميل...
+      </div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <div class="sidebar-footer">
+    <button class="sidebar-footer-btn" onclick="toggleTheme()">
+      <i class="fa-solid fa-moon" id="sidebarThemeIcon"></i> الوضع
+    </button>
+    <button class="sidebar-footer-btn" onclick="showSupport()">
+      <i class="fa-solid fa-heart" style="color:#ff6b6b"></i> دعم
+    </button>
+    <a href="/logout" class="sidebar-footer-btn" style="text-decoration:none;color:inherit">
+      <i class="fa-solid fa-right-from-bracket"></i> خروج
+    </a>
+  </div>
+</div>
+
+<!-- ═══════ HEADER ═══════ -->
+<header class="header">
+  <div class="header-left">
+    <button class="icon-btn" onclick="toggleSidebar()" title="القائمة">
+      <i class="fa-solid fa-bars"></i>
+    </button>
+  </div>
+
+  <div class="header-center">
+    <span class="logo">✨ Anas Wadi ✨</span>
+  </div>
+
+  <div class="header-right">
+    <button class="icon-btn" onclick="toggleTheme()" title="تغيير الوضع" id="themeBtn">
+      <i class="fa-solid fa-moon"></i>
+    </button>
+    <button class="icon-btn" onclick="newChat()" title="محادثة جديدة">
+      <i class="fa-solid fa-plus"></i>
+    </button>
+    <button class="icon-btn" onclick="showSupport()" title="ادعمني">
+      <i class="fa-solid fa-heart" style="color:#ff6b6b"></i>
+    </button>
+  </div>
+</header>
+
+<!-- Mode selector -->
+<div class="modes">
+  <button class="mode-btn active" data-mode="fast" onclick="setMode('fast')">⚡ سريع</button>
+  <button class="mode-btn" data-mode="thinker" onclick="setMode('thinker')">🧠 مفكر</button>
+  <button class="mode-btn" data-mode="funny" onclick="setMode('funny')">😂 فكاهي</button>
+  <button class="mode-btn" data-mode="creative" onclick="setMode('creative')">🎨 مبدع</button>
+  <button class="mode-btn" data-mode="coder" onclick="setMode('coder')">💻 مبرمج</button>
+  <button class="mode-btn" data-mode="writer" onclick="setMode('writer')">✍️ كاتب</button>
+</div>
+
+<!-- Chat messages -->
+<div class="chat-container" id="chatContainer">
+  <div class="welcome" id="welcome">
+    <span class="welcome-icon">🌊</span>
+    <h2>مرحباً في <span style="background:linear-gradient(90deg,#00ff94,#00d2ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">Anas Wadi</span></h2>
+    <p>تم تطوير هذا الذكاء الاصطناعي بيد المهندس <strong>Anas Wadi</strong> من ليبيا 🇱🇾</p>
+    <p style="margin-top:6px">كيف يمكنني مساعدتك اليوم؟</p>
+    <div class="welcome-cards">
+      <div class="welcome-card" onclick="useTemplate('ارسم صورة: ')">
+        <div class="card-icon">🎨</div>
+        <div class="card-title">رسم صورة</div>
+        <div class="card-desc">توليد صور فائقة الجودة</div>
+      </div>
+      <div class="welcome-card" onclick="useTemplate('اشرحلي ')">
+        <div class="card-icon">💡</div>
+        <div class="card-title">شرح وتحليل</div>
+        <div class="card-desc">أشرح أي موضوع تريده</div>
+      </div>
+      <div class="welcome-card" onclick="useTemplate('اكتبلي كود ')">
+        <div class="card-icon">💻</div>
+        <div class="card-title">برمجة</div>
+        <div class="card-desc">أكتب ويصلح الكود</div>
+      </div>
+      <div class="welcome-card" onclick="document.getElementById('fileInput').click()">
+        <div class="card-icon">📄</div>
+        <div class="card-title">تحليل ملف</div>
+        <div class="card-desc">PDF أو صورة</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Input area -->
+<div class="input-area">
+  <div class="file-preview hidden" id="filePreview">
+    <i class="fa-solid fa-file" style="color:var(--accent1)"></i>
+    <span id="fileName">ملف مرفق</span>
+    <button class="msg-btn" onclick="removeFile()" style="margin-right:auto">
+      <i class="fa-solid fa-xmark"></i>
+    </button>
+  </div>
+  <div class="templates" id="templateBtns">
+    <button class="template-btn" onclick="useTemplate('ارسم صورة: ')">🎨 ارسم</button>
+    <button class="template-btn" onclick="useTemplate('لخصلي الملف')">📄 لخص</button>
+    <button class="template-btn" onclick="useTemplate('اكتبلي ايميل رسمي عن ')">📧 ايميل</button>
+    <button class="template-btn" onclick="useTemplate('ترجم للعربية: ')">🌐 ترجم</button>
+    <button class="template-btn" onclick="setMode('coder');useTemplate('اصنعلي مشروع Flask كامل: ')">🏗️ مشروع</button>
+    <button class="template-btn" onclick="setMode('coder');useTemplate('اكتبلي API بـ Flask يحتوي على ')">⚙️ API</button>
+    <button class="template-btn" onclick="setMode('coder');useTemplate('صلحلي هذا الكود:\n')">🔧 صلح Bug</button>
+    <button class="template-btn" onclick="useTemplate('اشرحلي بالتفصيل ')">💡 شرح</button>
+  </div>
+  <div class="input-wrapper">
+    <input type="file" id="fileInput" accept="image/*,.pdf" onchange="handleFile(this)">
+    <button type="button" class="icon-btn" onclick="document.getElementById('fileInput').click()" title="ارفع ملف">
+      <i class="fa-solid fa-paperclip"></i>
+    </button>
+    <button type="button" class="icon-btn hidden" id="micBtn" onclick="toggleRecording()" title="تسجيل صوتي">
+      <i class="fa-solid fa-microphone" id="micIcon"></i>
+    </button>
+    <button type="button" class="icon-btn hidden" id="voiceModeBtn" onclick="enterVoiceMode()" title="وضع المحادثة الصوتية">
+      <i class="fa-solid fa-comment-dots"></i>
+    </button>
+    <div class="textarea-wrap">
+      <textarea id="messageInput"
+        placeholder="اكتب رسالتك... (Enter للإرسال، Shift+Enter لسطر جديد)"
+        onkeydown="handleKey(event)"
+        oninput="autoResize(this)"></textarea>
+    </div>
+    <button class="send-btn" id="sendBtn" onclick="sendMessage()" title="إرسال">
+      <i class="fa-solid fa-paper-plane"></i>
+    </button>
+  </div>
+  <div class="hidden" id="recordingBar">
+    <i class="fa-solid fa-circle" style="color:#ff4d4d;font-size:10px;animation:pulse 1.2s infinite"></i>
+    <span id="recordingTime">0:00</span>
+    <span style="color:var(--text-dim);font-size:12.5px">جاري التسجيل... اضغط المايك مجدداً للإيقاف</span>
+  </div>
+</div>
+
+<!-- Voice conversation mode -->
+<div class="voice-mode-overlay hidden" id="voiceModeOverlay">
+  <button type="button" class="voice-mode-exit" onclick="exitVoiceMode()" title="إنهاء المحادثة الصوتية">
+    <i class="fa-solid fa-xmark"></i>
+  </button>
+  <select class="voice-select" id="voiceSelect" onchange="setSelectedVoice(this.value)" title="اختر صوت Wadi">
+    <option value="fahad">🎙️ فهد</option>
+    <option value="abdullah">🎙️ عبدالله</option>
+    <option value="sultan">🎙️ سلطان</option>
+    <option value="noura">🎙️ نورة</option>
+    <option value="lulwa">🎙️ لولوة</option>
+    <option value="aisha">🎙️ عائشة</option>
+  </select>
+  <div class="voice-orb voice-orb-listening" id="voiceOrb"></div>
+  <div class="voice-status" id="voiceStatus">🎙️ جاري الاستماع...</div>
+  <div class="voice-transcript" id="voiceTranscript"></div>
+  <button type="button" class="voice-mode-stop-btn" id="voiceModeStopBtn" onclick="manualStopListening()">
+    <i class="fa-solid fa-stop"></i> خلصت من الكلام
+  </button>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<!-- Support modal -->
+<div class="modal" id="supportModal" onclick="closeModalClick(event)">
+  <div class="modal-content">
+    <div style="font-size:40px;margin-bottom:15px">💙</div>
+    <h2 style="margin-bottom:12px;font-size:22px">شكراً لدعمك!</h2>
+    <p style="color:var(--text-dim);line-height:1.9;font-size:14px">
+      دعمكم هو الوقود اللي يخلينا نطور ونضيف ميزات جديدة باستمرار 🚀
+    </p>
+    <a href="https://www.paypal.com" target="_blank" class="support-btn">
+      <i class="fa-brands fa-paypal"></i> ادعم عبر PayPal
+    </a>
+    <p style="margin-top:20px;font-size:12px;color:var(--text-dim)">Anas Wadi • Libya 🇱🇾</p>
+  </div>
+</div>
+
+<!-- Delete confirm modal -->
+<div class="modal" id="deleteModal" onclick="closeModalClick(event)">
+  <div class="confirm-modal-content">
+    <div style="font-size:36px;margin-bottom:12px">🗑️</div>
+    <h3>حذف المحادثة؟</h3>
+    <p>هذه العملية لا يمكن التراجع عنها.</p>
+    <div class="confirm-btns">
+      <button class="confirm-btn-del" onclick="confirmDelete()">حذف</button>
+      <button class="confirm-btn-cancel" onclick="document.getElementById('deleteModal').classList.remove('open')">إلغاء</button>
+    </div>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
