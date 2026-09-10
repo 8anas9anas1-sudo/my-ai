@@ -105,7 +105,10 @@ class Config:
     # بدون أي مفتاح API إضافي، مجاني بالكامل — لكنه يحمّل ~500MB
     # بالذاكرة بأول استخدام فعلي. راجع التعليق بأعلى app/rag.py قبل
     # التفعيل على خطة Render محدودة الرام أو بأكثر من worker.
-    ENABLE_RAG = True
+    # افتراضياً معطّلة — تحتاج رام أكبر من تير Render المجاني/Starter (512MB).
+    # لتفعيلها لاحقاً (مثلاً بعد الترقية لـ Standard/2GB)، ضيف ENABLE_RAG=True
+    # كمتغير بيئة بـRender بدون أي تعديل كود إضافي.
+    ENABLE_RAG = os.environ.get("ENABLE_RAG", "False") == "True"
     RAG_EMBEDDING_MODEL = 'paraphrase-multilingual-MiniLM-L12-v2'  # يدعم العربي + 50 لغة، 384 بُعد
     RAG_EMBEDDING_DIM = 384
     RAG_CHUNK_MAX_CHARS = 800

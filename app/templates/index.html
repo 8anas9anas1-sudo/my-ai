@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#050510">
 <meta name="csrf-token" content="{{ csrf_token() }}">
-<title>✨ Anas Wadi ✨</title>
+<title>Wadi</title>
+<link rel="icon" type="image/png" href="{{ url_for('static', filename='images/logo.png') }}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700;900&family=Cairo:wght@300;400;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
@@ -71,7 +72,7 @@
   </div>
 
   <div class="header-center">
-    <span class="logo">✨ Anas Wadi ✨</span>
+    <span class="logo"><img src="{{ url_for('static', filename='images/logo.png') }}" alt="Wadi" class="logo-img"> <span class="logo-text">Wadi</span></span>
   </div>
 
   <div class="header-right">
@@ -87,41 +88,31 @@
   </div>
 </header>
 
-<!-- Mode selector -->
-<div class="modes">
-  <button class="mode-btn active" data-mode="fast" onclick="setMode('fast')">⚡ سريع</button>
-  <button class="mode-btn" data-mode="thinker" onclick="setMode('thinker')">🧠 مفكر</button>
-  <button class="mode-btn" data-mode="funny" onclick="setMode('funny')">😂 فكاهي</button>
-  <button class="mode-btn" data-mode="creative" onclick="setMode('creative')">🎨 مبدع</button>
-  <button class="mode-btn" data-mode="coder" onclick="setMode('coder')">💻 مبرمج</button>
-  <button class="mode-btn" data-mode="writer" onclick="setMode('writer')">✍️ كاتب</button>
-</div>
-
 <!-- Chat messages -->
 <div class="chat-container" id="chatContainer">
   <div class="welcome" id="welcome">
-    <span class="welcome-icon">🌊</span>
-    <h2>مرحباً في <span style="background:linear-gradient(90deg,#00ff94,#00d2ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">Anas Wadi</span></h2>
-    <p>تم تطوير هذا الذكاء الاصطناعي بيد المهندس <strong>Anas Wadi</strong> من ليبيا 🇱🇾</p>
+    <img src="{{ url_for('static', filename='images/logo.png') }}" alt="Wadi" class="welcome-icon-img">
+    <h2>مرحباً في <span style="background:linear-gradient(90deg,#00ff94,#00d2ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">Wadi</span></h2>
+    <p>تم تطوير هذا الذكاء الاصطناعي بيد المهندس <strong>Anas Wadi</strong> من ليبيا <i class="fa-solid fa-flag"></i></p>
     <p style="margin-top:6px">كيف يمكنني مساعدتك اليوم؟</p>
     <div class="welcome-cards">
       <div class="welcome-card" onclick="useTemplate('ارسم صورة: ')">
-        <div class="card-icon">🎨</div>
+        <div class="card-icon"><i class="fa-solid fa-palette"></i></div>
         <div class="card-title">رسم صورة</div>
         <div class="card-desc">توليد صور فائقة الجودة</div>
       </div>
       <div class="welcome-card" onclick="useTemplate('اشرحلي ')">
-        <div class="card-icon">💡</div>
+        <div class="card-icon"><i class="fa-solid fa-lightbulb"></i></div>
         <div class="card-title">شرح وتحليل</div>
         <div class="card-desc">أشرح أي موضوع تريده</div>
       </div>
       <div class="welcome-card" onclick="useTemplate('اكتبلي كود ')">
-        <div class="card-icon">💻</div>
+        <div class="card-icon"><i class="fa-solid fa-code"></i></div>
         <div class="card-title">برمجة</div>
         <div class="card-desc">أكتب ويصلح الكود</div>
       </div>
       <div class="welcome-card" onclick="document.getElementById('fileInput').click()">
-        <div class="card-icon">📄</div>
+        <div class="card-icon"><i class="fa-solid fa-file-lines"></i></div>
         <div class="card-title">تحليل ملف</div>
         <div class="card-desc">PDF أو صورة</div>
       </div>
@@ -138,15 +129,39 @@
       <i class="fa-solid fa-xmark"></i>
     </button>
   </div>
-  <div class="templates" id="templateBtns">
-    <button class="template-btn" onclick="useTemplate('ارسم صورة: ')">🎨 ارسم</button>
-    <button class="template-btn" onclick="useTemplate('لخصلي الملف')">📄 لخص</button>
-    <button class="template-btn" onclick="useTemplate('اكتبلي ايميل رسمي عن ')">📧 ايميل</button>
-    <button class="template-btn" onclick="useTemplate('ترجم للعربية: ')">🌐 ترجم</button>
-    <button class="template-btn" onclick="setMode('coder');useTemplate('اصنعلي مشروع Flask كامل: ')">🏗️ مشروع</button>
-    <button class="template-btn" onclick="setMode('coder');useTemplate('اكتبلي API بـ Flask يحتوي على ')">⚙️ API</button>
-    <button class="template-btn" onclick="setMode('coder');useTemplate('صلحلي هذا الكود:\n')">🔧 صلح Bug</button>
-    <button class="template-btn" onclick="useTemplate('اشرحلي بالتفصيل ')">💡 شرح</button>
+  <div class="tools-row">
+    <div class="mode-selector-wrap">
+      <button type="button" class="mode-pill" id="modePill" onclick="toggleModeDropdown()">
+        <i class="fa-solid fa-bolt" id="modePillIcon"></i>
+        <span id="modePillLabel">سريع</span>
+        <i class="fa-solid fa-chevron-down mode-pill-chevron"></i>
+      </button>
+      <div class="mode-dropdown hidden" id="modeDropdown">
+        <button class="mode-btn active" data-mode="fast" onclick="setMode('fast')"><i class="fa-solid fa-bolt"></i> سريع</button>
+        <button class="mode-btn" data-mode="thinker" onclick="setMode('thinker')"><i class="fa-solid fa-brain"></i> مفكر</button>
+        <button class="mode-btn" data-mode="coder" onclick="setMode('coder')"><i class="fa-solid fa-code"></i> مبرمج</button>
+        <div class="mode-dropdown-divider"></div>
+        <button class="mode-btn" data-mode="funny" onclick="setMode('funny')"><i class="fa-solid fa-face-laugh-beam"></i> فكاهي</button>
+        <button class="mode-btn" data-mode="creative" onclick="setMode('creative')"><i class="fa-solid fa-palette"></i> مبدع</button>
+        <button class="mode-btn" data-mode="writer" onclick="setMode('writer')"><i class="fa-solid fa-pen-nib"></i> كاتب</button>
+      </div>
+    </div>
+
+    <div class="tools-wrap">
+      <button type="button" class="tools-btn" id="toolsBtn" onclick="toggleToolsPopup()" title="اختصارات سريعة">
+        <i class="fa-solid fa-plus"></i>
+      </button>
+      <div class="tools-popup hidden" id="toolsPopup">
+        <button class="template-btn" onclick="useTemplate('لخصلي الملف');closeToolsPopup()"><i class="fa-solid fa-file-lines"></i> لخص</button>
+        <button class="template-btn" onclick="useTemplate('اكتبلي ايميل رسمي عن ');closeToolsPopup()"><i class="fa-solid fa-envelope"></i> ايميل</button>
+        <button class="template-btn" onclick="useTemplate('ترجم للعربية: ');closeToolsPopup()"><i class="fa-solid fa-language"></i> ترجم</button>
+        <button class="template-btn" onclick="useTemplate('اشرحلي بالتفصيل ');closeToolsPopup()"><i class="fa-solid fa-lightbulb"></i> شرح</button>
+        <div class="mode-dropdown-divider"></div>
+        <button class="template-btn" onclick="setMode('coder');useTemplate('اصنعلي مشروع Flask كامل: ');closeToolsPopup()"><i class="fa-solid fa-diagram-project"></i> مشروع كامل</button>
+        <button class="template-btn" onclick="setMode('coder');useTemplate('اكتبلي API بـ Flask يحتوي على ');closeToolsPopup()"><i class="fa-solid fa-gear"></i> API</button>
+        <button class="template-btn" onclick="setMode('coder');useTemplate('صلحلي هذا الكود:\n');closeToolsPopup()"><i class="fa-solid fa-bug-slash"></i> صلح Bug</button>
+      </div>
+    </div>
   </div>
   <div class="input-wrapper">
     <input type="file" id="fileInput" accept="image/*,.pdf" onchange="handleFile(this)">
@@ -182,15 +197,15 @@
     <i class="fa-solid fa-xmark"></i>
   </button>
   <select class="voice-select" id="voiceSelect" onchange="setSelectedVoice(this.value)" title="اختر صوت Wadi">
-    <option value="fahad">🎙️ فهد</option>
-    <option value="abdullah">🎙️ عبدالله</option>
-    <option value="sultan">🎙️ سلطان</option>
-    <option value="noura">🎙️ نورة</option>
-    <option value="lulwa">🎙️ لولوة</option>
-    <option value="aisha">🎙️ عائشة</option>
+    <option value="fahad">فهد</option>
+    <option value="abdullah">عبدالله</option>
+    <option value="sultan">سلطان</option>
+    <option value="noura">نورة</option>
+    <option value="lulwa">لولوة</option>
+    <option value="aisha">عائشة</option>
   </select>
   <div class="voice-orb voice-orb-listening" id="voiceOrb"></div>
-  <div class="voice-status" id="voiceStatus">🎙️ جاري الاستماع...</div>
+  <div class="voice-status" id="voiceStatus">جاري الاستماع...</div>
   <div class="voice-transcript" id="voiceTranscript"></div>
   <button type="button" class="voice-mode-stop-btn" id="voiceModeStopBtn" onclick="manualStopListening()">
     <i class="fa-solid fa-stop"></i> خلصت من الكلام
@@ -200,25 +215,47 @@
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 
+<!-- Mic permission blocked modal -->
+<div class="modal" id="micPermissionModal" onclick="closeModalClick(event)">
+  <div class="modal-content">
+    <i class="fa-solid fa-microphone-slash" style="font-size:40px;margin-bottom:15px;color:#ff8080;display:block"></i>
+    <h2 style="margin-bottom:12px;font-size:20px">إذن المايكروفون محظور</h2>
+    <p style="color:var(--text-dim);line-height:1.9;font-size:14px;margin-bottom:6px">
+      حظرت المايكروفون لهذا الموقع سابقاً، فالمتصفح ما رح يسألك مرة ثانية تلقائياً. فعّله يدوياً بخطوتين:
+    </p>
+    <ol style="text-align:right;color:var(--text-dim);font-size:14px;line-height:2;margin:0 0 14px;padding-inline-start:20px">
+      <li>اضغط على أيقونة القفل 🔒 بجانب رابط الموقع أعلى المتصفح ← أذونات الموقع ← فعّل "المايكروفون"</li>
+      <li>أعد تحميل الصفحة</li>
+    </ol>
+    <p style="color:var(--text-dim);line-height:1.8;font-size:12.5px;margin-bottom:18px;border-top:1px solid var(--border);padding-top:12px">
+      لو رجعت هذي الرسالة رغم إنك فعّلت الإذن من المتصفح، فيه احتمال يكون نظام التشغيل نفسه (لا المتصفح) هو اللي يحظر المايك:
+      Windows ← الخصوصية والأمان ← المايكروفون، أو macOS ← إعدادات النظام ← الخصوصية والأمان ← المايكروفون — تأكد المتصفح مفعَّل بالقائمة.
+    </p>
+    <button class="support-btn" style="background:linear-gradient(135deg,#4facfe,#00f2fe);color:#000" onclick="location.reload()">
+      <i class="fa-solid fa-rotate-right"></i> إعادة تحميل الصفحة
+    </button>
+  </div>
+</div>
+
 <!-- Support modal -->
 <div class="modal" id="supportModal" onclick="closeModalClick(event)">
   <div class="modal-content">
-    <div style="font-size:40px;margin-bottom:15px">💙</div>
+    <i class="fa-solid fa-heart" style="font-size:40px;margin-bottom:15px;color:var(--accent1);display:block"></i>
     <h2 style="margin-bottom:12px;font-size:22px">شكراً لدعمك!</h2>
     <p style="color:var(--text-dim);line-height:1.9;font-size:14px">
-      دعمكم هو الوقود اللي يخلينا نطور ونضيف ميزات جديدة باستمرار 🚀
+      دعمكم هو الوقود اللي يخلينا نطور ونضيف ميزات جديدة باستمرار
     </p>
     <a href="https://www.paypal.com" target="_blank" class="support-btn">
       <i class="fa-brands fa-paypal"></i> ادعم عبر PayPal
     </a>
-    <p style="margin-top:20px;font-size:12px;color:var(--text-dim)">Anas Wadi • Libya 🇱🇾</p>
+    <p style="margin-top:20px;font-size:12px;color:var(--text-dim)">Wadi • Libya <i class="fa-solid fa-flag"></i></p>
   </div>
 </div>
 
 <!-- Delete confirm modal -->
 <div class="modal" id="deleteModal" onclick="closeModalClick(event)">
   <div class="confirm-modal-content">
-    <div style="font-size:36px;margin-bottom:12px">🗑️</div>
+    <i class="fa-solid fa-trash-can" style="font-size:36px;margin-bottom:12px;color:#ff8080;display:block"></i>
     <h3>حذف المحادثة؟</h3>
     <p>هذه العملية لا يمكن التراجع عنها.</p>
     <div class="confirm-btns">

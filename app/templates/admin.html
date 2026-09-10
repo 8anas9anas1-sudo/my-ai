@@ -4,9 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#050510">
-<title>لوحة التحكم — Anas Wadi</title>
+<title>لوحة التحكم — Wadi</title>
+<link rel="icon" type="image/png" href="{{ url_for('static', filename='images/logo.png') }}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -14,7 +16,7 @@
     padding: 28px 16px 60px; min-height: 100vh;
   }
   .wrap { max-width: 920px; margin: 0 auto; }
-  h1 { font-size: 22px; margin-bottom: 4px; }
+  h1 { font-size: 22px; margin-bottom: 4px; display: flex; align-items: center; gap: 9px; }
   .subtitle { color: rgba(232,234,246,0.45); font-size: 13px; margin-bottom: 28px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 28px; }
   .card {
@@ -24,7 +26,7 @@
   .card .num { font-size: 26px; font-weight: 900; color: #00ff94; }
   .card .label { font-size: 12.5px; color: rgba(232,234,246,0.55); margin-top: 4px; }
   section { margin-bottom: 32px; }
-  section h2 { font-size: 15px; margin-bottom: 14px; color: rgba(232,234,246,0.8); }
+  section h2 { font-size: 15px; margin-bottom: 14px; color: rgba(232,234,246,0.8); display: flex; align-items: center; gap: 8px; }
   .bar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 13px; }
   .bar-label { width: 90px; flex-shrink: 0; color: rgba(232,234,246,0.7); }
   .bar-track { flex: 1; background: rgba(255,255,255,0.05); border-radius: 6px; overflow: hidden; height: 20px; }
@@ -40,6 +42,7 @@
   }
   .flash-msg {
     padding: 12px 16px; border-radius: 10px; font-size: 13px; margin-bottom: 14px;
+    display: flex; align-items: flex-start; gap: 9px;
   }
   .flash-success { background: rgba(0,255,148,0.1); border: 1px solid rgba(0,255,148,0.3); color: #00ff94; }
   .flash-error { background: rgba(255,80,80,0.1); border: 1px solid rgba(255,80,80,0.3); color: #ff9b9b; }
@@ -53,6 +56,7 @@
     background: linear-gradient(90deg,#00ff94,#00d2ff); border: none; border-radius: 10px;
     padding: 10px 18px; font-family: inherit; font-weight: 700; font-size: 13.5px;
     color: #050510; cursor: pointer; width: fit-content;
+    display: inline-flex; align-items: center; gap: 7px;
   }
   .doc-row {
     display: flex; align-items: center; justify-content: space-between; gap: 10px;
@@ -71,26 +75,32 @@
 </head>
 <body>
 <div class="wrap">
-  <a class="back" href="/">← رجوع للشات</a>
-  <h1 style="margin-top:14px">📊 لوحة التحكم</h1>
+  <a class="back" href="/"><i class="fa-solid fa-arrow-right"></i> رجوع للشات</a>
+  <h1 style="margin-top:14px"><i class="fa-solid fa-gauge-high"></i> لوحة التحكم</h1>
   <p class="subtitle">أرقام مجمّعة فقط — بدون أي محتوى محادثات فردي</p>
 
   {% if not stats.available %}
-  <div class="warn-banner">⚠️ تعذّر الاتصال بقاعدة البيانات — الأرقام أدناه قد تكون فارغة أو غير دقيقة.</div>
+  <div class="warn-banner"><i class="fa-solid fa-triangle-exclamation"></i> تعذّر الاتصال بقاعدة البيانات — الأرقام أدناه قد تكون فارغة أو غير دقيقة.</div>
   {% endif %}
 
   {% with messages = get_flashed_messages(with_categories=true) %}
     {% for category, msg in messages %}
       {% if category == 'link' and '|' in msg %}
         <div class="flash-msg flash-success">
-          {{ msg.split('|')[0] }}
-          <input type="text" readonly value="{{ msg.split('|')[1] }}" onclick="this.select()"
-                 style="display:block;width:100%;margin-top:8px;background:rgba(0,0,0,0.25);
-                        border:1px solid rgba(0,255,148,0.3);border-radius:8px;color:#00ff94;
-                        padding:8px 10px;font-family:monospace;font-size:12.5px">
+          <i class="fa-solid fa-circle-check"></i>
+          <div>
+            {{ msg.split('|')[0] }}
+            <input type="text" readonly value="{{ msg.split('|')[1] }}" onclick="this.select()"
+                   style="display:block;width:100%;margin-top:8px;background:rgba(0,0,0,0.25);
+                          border:1px solid rgba(0,255,148,0.3);border-radius:8px;color:#00ff94;
+                          padding:8px 10px;font-family:monospace;font-size:12.5px">
+          </div>
         </div>
       {% else %}
-        <div class="flash-msg flash-{{ category }}">{{ msg }}</div>
+        <div class="flash-msg flash-{{ category }}">
+          <i class="fa-solid {{ 'fa-circle-check' if category == 'success' else 'fa-triangle-exclamation' }}"></i>
+          {{ msg }}
+        </div>
       {% endif %}
     {% endfor %}
   {% endwith %}
@@ -138,7 +148,7 @@
   </section>
 
   <section>
-    <h2>📶 استهلاك اليوم لكل فرد</h2>
+    <h2><i class="fa-solid fa-chart-simple"></i> استهلاك اليوم لكل فرد</h2>
     {% if not quota_enabled %}
       <div class="empty-note">الحصة اليومية معطّلة حالياً (ENABLE_DAILY_QUOTA=False بـ config.py)</div>
     {% elif today_usage %}
@@ -157,11 +167,11 @@
   </section>
 
   <section>
-    <h2>🔐 استرداد كلمة مرور لفرد عائلة</h2>
+    <h2><i class="fa-solid fa-key"></i> استرداد كلمة مرور لفرد عائلة</h2>
     <form class="memory-form" method="POST" action="{{ url_for('admin.generate_reset_link') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="email" name="email" placeholder="بريد فرد العائلة المسجَّل" required>
-      <button type="submit">🔗 ولّد رابط استرداد</button>
+      <button type="submit"><i class="fa-solid fa-link"></i> ولّد رابط استرداد</button>
     </form>
     <div class="empty-note">
       الرابط صالح 24 ساعة، استخدام واحد فقط — انسخه وأرسله يدوياً (واتساب، شخصياً...) لأنه لا بريد إلكتروني بالمشروع حالياً.
@@ -169,7 +179,7 @@
   </section>
 
   <section>
-    <h2>🧠 الذاكرة العائلية (RAG)</h2>
+    <h2><i class="fa-solid fa-database"></i> الذاكرة العائلية (RAG)</h2>
     {% if not rag_enabled %}
       <div class="empty-note">الميزة معطّلة حالياً (ENABLE_RAG=False بـ config.py)</div>
     {% else %}
@@ -177,7 +187,7 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="text" name="title" placeholder="عنوان الوثيقة (مثال: أرقام مهمة، وصفة أمي...)" required>
         <textarea name="content" placeholder="الصق النص هنا — يُقسَّم ويُخزَّن تلقائياً" required></textarea>
-        <button type="submit">➕ إضافة للذاكرة العائلية</button>
+        <button type="submit"><i class="fa-solid fa-plus"></i> إضافة للذاكرة العائلية</button>
       </form>
 
       {% if documents %}
@@ -191,7 +201,7 @@
                 onsubmit="return confirm('حذف هذه الوثيقة نهائياً؟');">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <input type="hidden" name="title" value="{{ d.title }}">
-            <button type="submit">🗑️ حذف</button>
+            <button type="submit"><i class="fa-solid fa-trash"></i> حذف</button>
           </form>
         </div>
         {% endfor %}

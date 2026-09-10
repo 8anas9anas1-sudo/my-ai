@@ -152,7 +152,7 @@ def chat():
             # الطويل. لو فشل التخزين، نرجع للرابط الأصلي بهدوء.
             display_url = (persist_generated_image(primary_url, user_email, chat_id)
                             if chat_id else None) or primary_url
-            response_text = f"🎨 تم توليد الصورة!\n**الوصف:** {prompt}\n\n_انقر على الصورة لعرضها بحجمها الكامل_"
+            response_text = f'<i class="fa-solid fa-palette"></i> تم توليد الصورة!\n**الوصف:** {prompt}\n\n_انقر على الصورة لعرضها بحجمها الكامل_'
             raw_text = f"تم توليد صورة: {prompt}"
             new_id = None
             if chat_id:

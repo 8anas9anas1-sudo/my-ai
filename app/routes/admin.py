@@ -85,15 +85,15 @@ def memory_add():
     title = (request.form.get('title') or '').strip()
     content = (request.form.get('content') or '').strip()
     if not title or not content:
-        flash('⚠️ العنوان والمحتوى مطلوبان', 'error')
+        flash('العنوان والمحتوى مطلوبان', 'error')
         return redirect(url_for('admin.dashboard'))
 
     user_email = (session.get('user', {}).get('email') or '').strip().lower()
     count, err = add_document(user_email, title, content)
     if err:
-        flash(f'⚠️ تعذرت إضافة الوثيقة: {err}', 'error')
+        flash(f'تعذرت إضافة الوثيقة: {err}', 'error')
     else:
-        flash(f'✅ تمت إضافة "{title}" ({count} مقطع)', 'success')
+        flash(f'تمت إضافة "{title}" ({count} مقطع)', 'success')
     return redirect(url_for('admin.dashboard'))
 
 
@@ -103,11 +103,11 @@ def memory_add():
 def memory_delete():
     title = (request.form.get('title') or '').strip()
     if not title:
-        flash('⚠️ لم يُحدَّد عنوان للحذف', 'error')
+        flash('لم يُحدَّد عنوان للحذف', 'error')
         return redirect(url_for('admin.dashboard'))
 
     ok = delete_document(title)
-    flash(f'✅ تم حذف "{title}"' if ok else f'⚠️ تعذر حذف "{title}"',
+    flash(f'تم حذف "{title}"' if ok else f'تعذر حذف "{title}"',
           'success' if ok else 'error')
     return redirect(url_for('admin.dashboard'))
 
@@ -123,13 +123,13 @@ def generate_reset_link():
     """
     email = (request.form.get('email') or '').strip().lower()
     if not email:
-        flash('⚠️ أدخل البريد الإلكتروني', 'error')
+        flash('أدخل البريد الإلكتروني', 'error')
         return redirect(url_for('admin.dashboard'))
 
     token, err = create_password_reset(email)
     if err:
-        flash(f'⚠️ {err}', 'error')
+        flash(f'{err}', 'error')
     else:
         reset_url = url_for('auth.reset_password', token=token, _external=True)
-        flash(f'✅ رابط استرداد لـ{email} (صالح 24 ساعة، استخدام واحد فقط):|{reset_url}', 'link')
+        flash(f'رابط استرداد لـ{email} (صالح 24 ساعة، استخدام واحد فقط):|{reset_url}', 'link')
     return redirect(url_for('admin.dashboard'))

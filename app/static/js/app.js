@@ -40,19 +40,65 @@ function generateStars() {
 }
 
 // ─── Toast ────────────────────────────────────────────────────
+const TOAST_ICONS = { success: 'fa-circle-check', error: 'fa-triangle-exclamation', '': 'fa-circle-info' };
+
 function showToast(msg, type = '') {
   const t = document.getElementById('toast');
-  t.textContent = msg;
+  t.innerHTML = '';
+  const icon = document.createElement('i');
+  icon.className = 'fa-solid ' + (TOAST_ICONS[type] || TOAST_ICONS['']);
+  const text = document.createElement('span');
+  text.textContent = msg;
+  t.appendChild(icon);
+  t.appendChild(text);
   t.className = 'toast show ' + type;
-  setTimeout(() => t.className = 'toast', 3200);
+  // مدة أطول للرسائل الأطول من المعتاد (مثل تفاصيل خطأ تقنية بعدة
+  // أسطر) — 3.2 ثانية كانت تختفي قبل ما يقدر المستخدم حتى يقرأها.
+  const duration = Math.min(9000, Math.max(3200, msg.length * 65));
+  clearTimeout(showToast._h);
+  showToast._h = setTimeout(() => t.className = 'toast', duration);
 }
 
 // ─── Mode ─────────────────────────────────────────────────────
+const MODE_META = {
+  fast:     { icon: 'fa-bolt',            label: 'سريع'  },
+  thinker:  { icon: 'fa-brain',           label: 'مفكر'  },
+  funny:    { icon: 'fa-face-laugh-beam', label: 'فكاهي' },
+  creative: { icon: 'fa-palette',         label: 'مبدع'  },
+  coder:    { icon: 'fa-code',            label: 'مبرمج' },
+  writer:   { icon: 'fa-pen-nib',         label: 'كاتب'  },
+};
+
 function setMode(m, save = true) {
   currentMode = m;
   if (save) localStorage.setItem('mode', m);
   document.querySelectorAll('.mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
+
+  const meta = MODE_META[m] || MODE_META.fast;
+  const pillIcon = document.getElementById('modePillIcon');
+  const pillLabel = document.getElementById('modePillLabel');
+  if (pillIcon) pillIcon.className = 'fa-solid ' + meta.icon;
+  if (pillLabel) pillLabel.textContent = meta.label;
+  document.getElementById('modeDropdown')?.classList.add('hidden');
 }
+
+function toggleModeDropdown() {
+  document.getElementById('toolsPopup')?.classList.add('hidden');
+  document.getElementById('modeDropdown')?.classList.toggle('hidden');
+}
+function toggleToolsPopup() {
+  document.getElementById('modeDropdown')?.classList.add('hidden');
+  document.getElementById('toolsPopup')?.classList.toggle('hidden');
+}
+function closeToolsPopup() {
+  document.getElementById('toolsPopup')?.classList.add('hidden');
+}
+document.addEventListener('click', (e) => {
+  const modeWrap = document.querySelector('.mode-selector-wrap');
+  const toolsWrap = document.querySelector('.tools-wrap');
+  if (modeWrap && !modeWrap.contains(e.target)) document.getElementById('modeDropdown')?.classList.add('hidden');
+  if (toolsWrap && !toolsWrap.contains(e.target)) document.getElementById('toolsPopup')?.classList.add('hidden');
+});
 
 // ─── DB Chats ─────────────────────────────────────────────────
 async function loadDbChats() {
@@ -71,16 +117,15 @@ function renderChatList() {
   const l = document.getElementById('chatList');
   l.innerHTML = '';
   if (dbChats.length === 0) {
-    l.innerHTML = '<div style="color:var(--text-dim);font-size:13px;text-align:center;padding:24px 10px">لا توجد محادثات سابقة<br><span style="font-size:22px;display:block;margin-top:10px">💬</span></div>';
+    l.innerHTML = '<div style="color:var(--text-dim);font-size:13px;text-align:center;padding:24px 10px">لا توجد محادثات سابقة<br><i class="fa-regular fa-comments" style="font-size:22px;display:block;margin-top:10px;opacity:0.6"></i></div>';
     return;
   }
   dbChats.forEach(chat => {
     const d = document.createElement('div');
     d.className = 'chat-item' + (chat.chat_id === currentChatId ? ' active' : '');
 
-    const icon = document.createElement('span');
-    icon.className = 'chat-item-icon';
-    icon.textContent = '💬';
+    const icon = document.createElement('i');
+    icon.className = 'chat-item-icon fa-solid fa-comment';
 
     const text = document.createElement('span');
     text.className = 'chat-item-text';
@@ -117,8 +162,8 @@ function renderChatListLocal() {
     const d = document.createElement('div');
     d.className = 'chat-item' + (id === currentChatId ? ' active' : '');
 
-    const icon = document.createElement('span');
-    icon.className = 'chat-item-icon'; icon.textContent = '💬';
+    const icon = document.createElement('i');
+    icon.className = 'chat-item-icon fa-solid fa-comment';
 
     const text = document.createElement('span');
     text.className = 'chat-item-text'; text.textContent = t.substring(0, 30);
@@ -161,7 +206,7 @@ async function confirmDelete() {
   } catch(e) {}
 
   await loadDbChats();
-  showToast('🗑️ تم حذف المحادثة', 'success');
+  showToast('تم حذف المحادثة', 'success');
 }
 
 // ─── Load & Switch Chat ───────────────────────────────────────
@@ -214,15 +259,15 @@ function renderChat() {
   const h = chats[currentChatId] || [];
   if (h.length === 0) {
     c.innerHTML = `<div class="welcome" id="welcome">
-      <span class="welcome-icon">🌊</span>
-      <h2>مرحباً في <span style="background:linear-gradient(90deg,#00ff94,#00d2ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">Anas Wadi</span></h2>
-      <p>تم تطوير هذا الذكاء الاصطناعي بيد المهندس <strong>Anas Wadi</strong> من ليبيا 🇱🇾</p>
+      <img src="/static/images/logo.png" alt="Wadi" class="welcome-icon-img">
+      <h2>مرحباً في <span style="background:linear-gradient(90deg,#00ff94,#00d2ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">Wadi</span></h2>
+      <p>تم تطوير هذا الذكاء الاصطناعي بيد المهندس <strong>Anas Wadi</strong> من ليبيا <i class="fa-solid fa-flag"></i></p>
       <p style="margin-top:6px">كيف يمكنني مساعدتك اليوم؟</p>
       <div class="welcome-cards">
-        <div class="welcome-card" onclick="useTemplate('ارسم صورة: ')"><div class="card-icon">🎨</div><div class="card-title">رسم صورة</div><div class="card-desc">توليد صور فائقة الجودة</div></div>
-        <div class="welcome-card" onclick="useTemplate('اشرحلي ')"><div class="card-icon">💡</div><div class="card-title">شرح وتحليل</div><div class="card-desc">أشرح أي موضوع تريده</div></div>
-        <div class="welcome-card" onclick="setMode('coder');useTemplate('اصنعلي مشروع ')"><div class="card-icon">💻</div><div class="card-title">مشروع كامل</div><div class="card-desc">موقع، API، بوت — جاهز للتشغيل</div></div>
-        <div class="welcome-card" onclick="document.getElementById('fileInput').click()"><div class="card-icon">📄</div><div class="card-title">تحليل ملف</div><div class="card-desc">PDF أو صورة</div></div>
+        <div class="welcome-card" onclick="useTemplate('ارسم صورة: ')"><div class="card-icon"><i class="fa-solid fa-palette"></i></div><div class="card-title">رسم صورة</div><div class="card-desc">توليد صور فائقة الجودة</div></div>
+        <div class="welcome-card" onclick="useTemplate('اشرحلي ')"><div class="card-icon"><i class="fa-solid fa-lightbulb"></i></div><div class="card-title">شرح وتحليل</div><div class="card-desc">أشرح أي موضوع تريده</div></div>
+        <div class="welcome-card" onclick="setMode('coder');useTemplate('اصنعلي مشروع ')"><div class="card-icon"><i class="fa-solid fa-code"></i></div><div class="card-title">مشروع كامل</div><div class="card-desc">موقع، API، بوت — جاهز للتشغيل</div></div>
+        <div class="welcome-card" onclick="document.getElementById('fileInput').click()"><div class="card-icon"><i class="fa-solid fa-file-lines"></i></div><div class="card-title">تحليل ملف</div><div class="card-desc">PDF أو صورة</div></div>
       </div>
     </div>`;
     return;
@@ -290,7 +335,7 @@ function copyCodeBlock(btn) {
       btn.classList.remove('copied');
       btn.innerHTML = '<i class="fa-regular fa-copy"></i> نسخ';
     }, 2000);
-  }).catch(() => showToast('⚠️ تعذر النسخ', 'error'));
+  }).catch(() => showToast('تعذر النسخ', 'error'));
 }
 
 function escHtml(t) {
@@ -408,12 +453,12 @@ async function sendMessage() {
       },
       onError: (msg) => {
         showToast(msg, 'error');
-        c[msgIndex].ai = '⚠️ ' + msg;
+        c[msgIndex].ai = 'حدث خطأ: ' + msg;
         renderChat();
       }
     });
   } catch (err) {
-    c[msgIndex].ai = '⚠️ صار خطأ: ' + err.message;
+    c[msgIndex].ai = 'حدث خطأ: ' + err.message;
     renderChat();
     showToast('تعذر الإرسال', 'error');
   } finally {
@@ -450,10 +495,10 @@ async function regenerate(i) {
         if (evt.imageUrl) c[i].imageUrl = evt.imageUrl; else delete c[i].imageUrl;
         saveChats(); renderChat();
       },
-      onError: (msg) => { c[i].ai = '⚠️ ' + msg; renderChat(); }
+      onError: (msg) => { c[i].ai = 'حدث خطأ: ' + msg; renderChat(); }
     });
   } catch (err) {
-    c[i].ai = '⚠️ صار خطأ: ' + err.message;
+    c[i].ai = 'حدث خطأ: ' + err.message;
     renderChat();
   } finally {
     saveChats(); isSending = false;
@@ -483,11 +528,11 @@ function copyText(t) {
   const tmp = document.createElement('div');
   tmp.innerHTML = t;
   navigator.clipboard.writeText(tmp.textContent || t);
-  showToast('✅ تم النسخ', 'success');
+  showToast('تم النسخ', 'success');
 }
 function saveChats() {
   try { localStorage.setItem('chats', JSON.stringify(chats)); }
-  catch(e) { showToast('⚠️ الذاكرة ممتلئة! احذف محادثات قديمة', 'error'); }
+  catch(e) { showToast('الذاكرة ممتلئة — احذف محادثات قديمة', 'error'); }
 }
 function toggleSidebar() {
   document.getElementById('sidebar').classList.toggle('open');
@@ -532,6 +577,64 @@ function voiceSupported() {
   return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
 }
 
+// ─── تصنيف أخطاء المايكروفون ومعالجتها بوضوح ──────────────────
+// المشكلة الشائعة: لو المستخدم حظر إذن المايك لهذا الموقع مسبقاً (ولو
+// بالخطأ)، المتصفح لا يعيد إظهار نافذة "سماح/حظر" الأصلية أبداً بعدها
+// — يرفض getUserMedia فوراً وبصمت. رسالة توست عامة بهذي الحالة تدوّخ
+// المستخدم لأنه يفهمها كأن الموقع "ما يعطيه خيار السماح" أصلاً، بينما
+// الحل الفعلي يتطلب خطوة يدوية من إعدادات المتصفح نفسه. نفرّق هنا بين
+// هذي الحالة وبقية الأخطاء (لا يوجد مايك، المايك مستخدَم من تطبيق
+// آخر...) ونوجّه لكل حالة بالحل الصحيح تحديداً.
+function classifyMicError(err) {
+  const name = err && err.name;
+  if (name === 'NotAllowedError' || name === 'PermissionDeniedError') return 'blocked';
+  if (name === 'NotFoundError' || name === 'DevicesNotFoundError') return 'not-found';
+  if (name === 'NotReadableError' || name === 'TrackStartError') return 'in-use';
+  if (name === 'SecurityError') return 'insecure';
+  return 'unknown';
+}
+
+function handleMicError(err) {
+  const kind = classifyMicError(err);
+  console.error('Mic error:', err && err.name, err && err.message, err);
+  if (kind === 'blocked') {
+    document.getElementById('micPermissionModal')?.classList.add('open');
+    return;
+  }
+  const messages = {
+    'not-found': '⚠️ ما تم العثور على مايكروفون متصل بجهازك',
+    'in-use': '⚠️ المايكروفون مستخدَم حالياً من تطبيق أو تبويب آخر — أغلقه وحاول مجدداً',
+    'insecure': '⚠️ الوصول للمايكروفون يتطلب اتصالاً آمناً (HTTPS)',
+    'unknown': '⚠️ تعذر الوصول للمايكروفون — تأكد من السماح بالإذن',
+  };
+  // تفاصيل تقنية مؤقتة أثناء التشخيص — تساعدنا نحدد السبب الدقيق لو
+  // التصنيف أعلاه ما طابق الخطأ الفعلي (متصفحات أندرويد معروفة بأخطاء
+  // غير قياسية أحياناً). نحذف هذا السطر لاحقاً بعد ما نحدد السبب فعلياً.
+  const detail = err && err.name ? `\nتفاصيل تقنية: ${err.name}${err.message ? ' — ' + err.message : ''}` : '';
+  showToast((messages[kind] || messages.unknown) + detail, 'error');
+}
+
+// نتحقق من حالة الإذن *قبل* محاولة الوصول الفعلي لو المتصفح يدعم
+// Permissions API (Safari لا يدعمها) — يكشف حالة "محظور مسبقاً" بشكل
+// صريح ومباشر، بدل الاعتماد فقط على تفسير رفض getUserMedia لاحقاً.
+async function getMicStream() {
+  try {
+    if (navigator.permissions && navigator.permissions.query) {
+      const status = await navigator.permissions.query({ name: 'microphone' });
+      if (status.state === 'denied') {
+        const blockedErr = new Error('Microphone permission blocked');
+        blockedErr.name = 'NotAllowedError';
+        throw blockedErr;
+      }
+    }
+  } catch (e) {
+    if (e.name === 'NotAllowedError') throw e;
+    // فشل استعلام الأذونات نفسه (متصفح لا يدعم 'microphone' بهذا الاستعلام،
+    // مثل Safari) — نتجاهله ونكمل لمحاولة getUserMedia العادية.
+  }
+  return navigator.mediaDevices.getUserMedia({ audio: true });
+}
+
 function initVoiceUI() {
   // الزر يبقى مخفياً افتراضياً بالـ HTML لو المتصفح ما يدعم التسجيل —
   // نُظهره فقط لو الدعم مؤكد، بدل زر مكسور يفشل عند الضغط عليه.
@@ -554,11 +657,11 @@ async function toggleRecording() {
     return;
   }
   if (!voiceSupported()) {
-    showToast('⚠️ متصفحك لا يدعم التسجيل الصوتي', 'error');
+    showToast('متصفحك لا يدعم التسجيل الصوتي', 'error');
     return;
   }
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const stream = await getMicStream();
     recordedChunks = [];
     mediaRecorder = new MediaRecorder(stream);
     mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
@@ -577,7 +680,7 @@ async function toggleRecording() {
     updateRecordingTimer();
     recordingTimerHandle = setInterval(updateRecordingTimer, 500);
   } catch (err) {
-    showToast('⚠️ تعذر الوصول للمايكروفون — تأكد من السماح بالإذن', 'error');
+    handleMicError(err);
   }
 }
 
@@ -587,12 +690,12 @@ function updateRecordingTimer() {
   document.getElementById('recordingTime').textContent = `${m}:${String(s).padStart(2, '0')}`;
   if (elapsed >= 60 && mediaRecorder && mediaRecorder.state === 'recording') {
     mediaRecorder.stop();  // حد أقصى دفاعي — يمنع تسجيلاً بلا نهاية لو المستخدم نسي يوقفه
-    showToast('⏱️ وصلت للحد الأقصى للتسجيل (دقيقة)', '');
+    showToast('وصلت للحد الأقصى للتسجيل (دقيقة)', '');
   }
 }
 
 async function uploadRecording(blob) {
-  showToast('🎙️ جاري تحويل الصوت لنص...', '');
+  showToast('جاري تحويل الصوت لنص...', '');
   const fd = new FormData();
   fd.append('audio', blob, 'recording.webm');
   try {
@@ -606,7 +709,7 @@ async function uploadRecording(blob) {
     autoResize(inp);
     inp.focus();
   } catch (err) {
-    showToast('⚠️ تعذر تحويل الصوت لنص', 'error');
+    showToast('تعذر تحويل الصوت لنص', 'error');
   }
 }
 
@@ -643,7 +746,7 @@ function setSelectedVoice(voice) {
 
 function enterVoiceMode() {
   if (!voiceSupported()) {
-    showToast('⚠️ متصفحك لا يدعم التسجيل الصوتي', 'error');
+    showToast('متصفحك لا يدعم التسجيل الصوتي', 'error');
     return;
   }
   const sel = document.getElementById('voiceSelect');
@@ -676,7 +779,7 @@ async function startVoiceListening() {
   VoiceMode.recordedChunks = [];
 
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const stream = await getMicStream();
     if (VoiceMode.state !== 'listening') {
       stream.getTracks().forEach(t => t.stop());  // خرجنا أثناء انتظار إذن المايك
       return;
@@ -690,8 +793,8 @@ async function startVoiceListening() {
     VoiceMode.mediaRecorder.start();
     setupVAD(stream);
   } catch (err) {
-    showToast('⚠️ تعذر الوصول للمايكروفون — تأكد من السماح بالإذن', 'error');
     exitVoiceMode();
+    handleMicError(err);
   }
 }
 
@@ -762,7 +865,7 @@ async function handleVoiceRecordingStopped(mimeType) {
     const d = await r.json();
     if (VoiceMode.state !== 'processing') return;  // خرجنا من وضع المحادثة أثناء انتظار الرد
     if (d.error || !d.text || !d.text.trim()) {
-      showToast(d.error || '⚠️ ما قدرنا نفهم الكلام، حاول مجدداً', 'error');
+      showToast(d.error || 'ما قدرنا نفهم الكلام، حاول مجدداً', 'error');
       await startVoiceListening();
       return;
     }
@@ -777,7 +880,7 @@ async function handleVoiceRecordingStopped(mimeType) {
     await sendMessage();
   } catch (err) {
     if (VoiceMode.state === 'processing') {
-      showToast('⚠️ تعذر تحويل الصوت لنص', 'error');
+      showToast('تعذر تحويل الصوت لنص', 'error');
       await startVoiceListening();
     }
   }
@@ -788,7 +891,7 @@ function setVoiceState(state) {
   const orb = document.getElementById('voiceOrb');
   const status = document.getElementById('voiceStatus');
   if (orb) orb.className = 'voice-orb voice-orb-' + state;
-  const labels = { listening: '🎙️ جاري الاستماع...', processing: '💭 جاري التفكير...', speaking: '🔊 يتكلم...' };
+  const labels = { listening: 'جاري الاستماع...', processing: 'جاري التفكير...', speaking: 'يتكلم...' };
   if (status) status.textContent = labels[state] || '';
   const stopBtn = document.getElementById('voiceModeStopBtn');
   if (stopBtn) stopBtn.classList.toggle('hidden', state !== 'listening');
@@ -827,7 +930,7 @@ async function speakMessage(i, opts) {
   const c = chats[currentChatId];
   const text = (c[i].rawAi || c[i].ai || '').replace(/<[^>]*>/g, ' ');
   if (!text.trim()) {
-    if (!opts.silent) showToast('⚠️ لا يوجد نص لقراءته', 'error');
+    if (!opts.silent) showToast('لا يوجد نص لقراءته', 'error');
     if (opts.onDone) opts.onDone();
     return;
   }
@@ -876,7 +979,7 @@ async function speakMessage(i, opts) {
           enqueueAudioClip(evt.audio, i);
         } else if (evt.type === 'error') {
           if (!gotFirstClip) {
-            if (!opts.silent) showToast(evt.error || '⚠️ تعذر توليد الصوت', 'error');
+            if (!opts.silent) showToast(evt.error || 'تعذر توليد الصوت', 'error');
             if (btn) btn.innerHTML = originalHtml;
             currentSpeakingIndex = null;
             const cb = onSpeakFullyDone; onSpeakFullyDone = null;
@@ -890,7 +993,7 @@ async function speakMessage(i, opts) {
     }
   } catch (err) {
     if (!gotFirstClip) {
-      if (!opts.silent) showToast('⚠️ تعذر توليد الصوت', 'error');
+      if (!opts.silent) showToast('تعذر توليد الصوت', 'error');
       if (btn) btn.innerHTML = originalHtml;
       currentSpeakingIndex = null;
       const cb = onSpeakFullyDone; onSpeakFullyDone = null;

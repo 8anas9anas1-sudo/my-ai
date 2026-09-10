@@ -4,7 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#050510">
-<title>✨ Anas Wadi — {{ title }}</title>
+<title>Wadi — {{ title }}</title>
+<link rel="icon" type="image/png" href="{{ url_for('static', filename='images/logo.png') }}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
@@ -13,8 +14,8 @@
 <body>
 <div class="stars" id="stars"></div>
 <div class="card">
-  <div class="logo">✨ Anas Wadi</div>
-  <div class="subtitle">مساعد الذكاء الاصطناعي 🇱🇾</div>
+  <div class="logo"><img src="{{ url_for('static', filename='images/logo.png') }}" alt="Wadi" class="logo-img"> <span class="logo-text">Wadi</span></div>
+  <div class="subtitle">مساعد الذكاء الاصطناعي <i class="fa-solid fa-flag"></i></div>
 
   <div class="tabs">
     <button class="tab {% if mode == 'login' %}active{% endif %}"
@@ -28,10 +29,10 @@
   </div>
 
   {% if error %}
-  <div class="error-msg">⚠️ {{ error }}</div>
+  <div class="error-msg"><i class="fa-solid fa-triangle-exclamation"></i> {{ error }}</div>
   {% endif %}
   {% if success %}
-  <div class="success-msg">✅ {{ success }}</div>
+  <div class="success-msg"><i class="fa-solid fa-circle-check"></i> {{ success }}</div>
   {% endif %}
 
   {% if mode == 'login' %}
