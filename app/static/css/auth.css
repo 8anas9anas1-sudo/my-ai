@@ -62,8 +62,10 @@ body::before {
 }
 .tab.active {
   background:linear-gradient(135deg,#00ff94,#00d2ff);
-  color:#000;
+  color:#000; animation:tabActivate 0.25s cubic-bezier(0.34,1.56,0.64,1);
 }
+@keyframes tabActivate { from{transform:scale(0.93)} to{transform:scale(1)} }
+.tab:active { transform:scale(0.96); }
 .form { display:flex; flex-direction:column; gap:16px; }
 .input-group { position:relative; }
 .input-group i {
@@ -99,13 +101,31 @@ input::placeholder { color:rgba(232,234,246,0.35); }
   color:#ff8080; padding:10px 16px; border-radius:10px;
   font-size:13px; text-align:center;
   display:flex; align-items:center; justify-content:center; gap:8px;
-  {% if not error %}display:none;{% endif %}
+  animation:shakeError 0.4s ease;
+}
+@keyframes shakeError {
+  0%,100% { transform:translateX(0); }
+  20%,60% { transform:translateX(-6px); }
+  40%,80% { transform:translateX(6px); }
 }
 .success-msg {
   background:rgba(0,255,148,0.1); border:1px solid rgba(0,255,148,0.3);
   color:#00ff94; padding:10px 16px; border-radius:10px;
   font-size:13px; text-align:center;
   display:flex; align-items:center; justify-content:center; gap:8px;
-  {% if not success %}display:none;{% endif %}
+  animation:successPop 0.35s cubic-bezier(0.34,1.56,0.64,1);
 }
+@keyframes successPop { from{opacity:0;transform:scale(0.9)} to{opacity:1;transform:scale(1)} }
 .divider { text-align:center; color:rgba(232,234,246,0.3); font-size:12px; margin:4px 0; }
+
+button:focus-visible, a:focus-visible, input:focus-visible {
+  outline:2px solid #00d2ff; outline-offset:2px; border-radius:8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration:0.01ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:0.01ms !important;
+  }
+}

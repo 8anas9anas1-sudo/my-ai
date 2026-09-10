@@ -575,8 +575,10 @@ def split_text_for_tts(text, max_chars=None):
 def synthesize_speech(text, lang='ar', voice=None):
     """
     يحوّل مقطع نص واحد (≤200 حرف) لصوت عبر Orpheus على Groq. يرجع
-    (bytes الصوت بصيغة mp3, رسالة الخطأ). يتطلب قبول شروط الموديل من
+    (bytes الصوت بصيغة wav, رسالة الخطأ). يتطلب قبول شروط الموديل من
     حساب Groq مسبقاً (انظر التعليق بجانب TTS_MODEL_AR في config.py).
+    ملاحظة: Orpheus على Groq يدعم wav فقط لـresponse_format حالياً —
+    طلب mp3 يفشل برسالة "response_format must be one of [wav]".
     voice: معرّف صوت صريح (لازم يكون من TTS_VOICES_AR/EN بconfig.py —
     التحقق مسؤولية المستدعي بـroutes/api.py) — وإلا الافتراضي حسب اللغة.
     """
@@ -589,7 +591,7 @@ def synthesize_speech(text, lang='ar', voice=None):
         resp = requests.post(
             Config.GROQ_TTS_URL,
             headers={"Authorization": f"Bearer {Config.GROQ_API_KEY}", "Content-Type": "application/json"},
-            json={"model": model, "input": text[:200], "voice": voice, "response_format": "mp3"},
+            json={"model": model, "input": text[:200], "voice": voice, "response_format": "wav"},
             timeout=30
         )
         if not resp.ok:

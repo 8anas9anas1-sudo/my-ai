@@ -70,6 +70,7 @@ const MODE_META = {
 };
 
 function setMode(m, save = true) {
+  const changed = m !== currentMode;
   currentMode = m;
   if (save) localStorage.setItem('mode', m);
   document.querySelectorAll('.mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
@@ -80,6 +81,17 @@ function setMode(m, save = true) {
   if (pillIcon) pillIcon.className = 'fa-solid ' + meta.icon;
   if (pillLabel) pillLabel.textContent = meta.label;
   document.getElementById('modeDropdown')?.classList.add('hidden');
+
+  // ومضة بصرية خفيفة تؤكد تغيّر الوضع فعلياً — بدل ما يتغيّر الأيقونة
+  // والنص بصمت تام بلا أي إشارة تفاعل محسوسة.
+  if (changed) {
+    const pill = document.getElementById('modePill');
+    if (pill) {
+      pill.classList.remove('flash');
+      void pill.offsetWidth;  // إعادة تشغيل الأنيميشن لو المستخدم بدّل بسرعة أكتر من مرة
+      pill.classList.add('flash');
+    }
+  }
 }
 
 function toggleModeDropdown() {
@@ -455,12 +467,14 @@ async function sendMessage() {
         showToast(msg, 'error');
         c[msgIndex].ai = 'حدث خطأ: ' + msg;
         renderChat();
+        if (triggeredByVoice && VoiceMode.state !== 'idle') startVoiceListening();
       }
     });
   } catch (err) {
     c[msgIndex].ai = 'حدث خطأ: ' + err.message;
     renderChat();
     showToast('تعذر الإرسال', 'error');
+    if (triggeredByVoice && VoiceMode.state !== 'idle') startVoiceListening();
   } finally {
     if (localPreviewUrl) URL.revokeObjectURL(localPreviewUrl);
     currentFile = null;
@@ -979,7 +993,10 @@ async function speakMessage(i, opts) {
           enqueueAudioClip(evt.audio, i);
         } else if (evt.type === 'error') {
           if (!gotFirstClip) {
-            if (!opts.silent) showToast(evt.error || 'تعذر توليد الصوت', 'error');
+            // نعرض الخطأ دائماً ولو بوضع silent — الصمت مقصود للحالات
+            // العادية (مثل عدم وجود نص للقراءة)، لا لإخفاء فشل حقيقي عن
+            // المستخدم بوضع المكالمة الصوتية ويتركه بلا أي تفسير.
+            showToast(evt.error || 'تعذر توليد الصوت', 'error');
             if (btn) btn.innerHTML = originalHtml;
             currentSpeakingIndex = null;
             const cb = onSpeakFullyDone; onSpeakFullyDone = null;
@@ -993,7 +1010,7 @@ async function speakMessage(i, opts) {
     }
   } catch (err) {
     if (!gotFirstClip) {
-      if (!opts.silent) showToast('تعذر توليد الصوت', 'error');
+      showToast('تعذر توليد الصوت', 'error');
       if (btn) btn.innerHTML = originalHtml;
       currentSpeakingIndex = null;
       const cb = onSpeakFullyDone; onSpeakFullyDone = null;
@@ -1023,7 +1040,7 @@ function playNextInQueue(msgIndex) {
   }
   audioQueuePlaying = true;
   const clip = audioQueue.shift();
-  const audio = new Audio('data:audio/mp3;base64,' + clip);
+  const audio = new Audio('data:audio/wav;base64,' + clip);
   currentAudioPlayer = audio;
   audio.onended = () => playNextInQueue(msgIndex);
   audio.onerror = () => playNextInQueue(msgIndex);
