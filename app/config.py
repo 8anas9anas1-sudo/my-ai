@@ -177,8 +177,12 @@ class Config:
         'funny': 0.92, 'creative': 0.88, 'writer': 0.82,
         'thinker': 0.45, 'coder': 0.25, 'fast': 0.72,
     }
+    # coder كان 4096 — قليل جداً لمشروع متعدد الملفات (كان يقطع الملفات
+    # الأخيرة منتصفها فعلياً، وهذا يناقض قاعدة "اكتب الكود كاملاً دائماً"
+    # بـMODE_PROMPTS['coder']). openai/gpt-oss-120b يدعم حتى 65,536 توكن
+    # إخراج عند Groq — رفعناه لـ16000 كهامش حقيقي بدون تطرف على السقف.
     MAX_TOKENS_MAP = {
-        'coder': 4096, 'thinker': 3000, 'writer': 2500,
+        'coder': 16000, 'thinker': 3000, 'writer': 2500,
         'creative': 2000, 'funny': 1500, 'fast': 2048,
     }
     # gpt-oss نماذج "تفكير" (reasoning) — نفعّلها بعمق متوسط لوضعي

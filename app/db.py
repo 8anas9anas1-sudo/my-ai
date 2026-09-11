@@ -50,6 +50,12 @@ def init_db():
                     -- عمود جديد لمسار الصورة المرفوعة بمخزن Supabase (تخزين
                     -- دائم). ADD COLUMN IF NOT EXISTS آمن على نشر قائم فعلاً.
                     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS uploaded_image_path TEXT;
+                    -- تفكير النموذج الداخلي (reasoning من نماذج gpt-oss أثناء
+                    -- البث) — يُحفظ الآن دائماً بدل ما يضيع بعد الجلسة، حتى
+                    -- يبقى زر "عرض التفكير" شغّالاً حتى بعد تحديث الصفحة أو
+                    -- تبديل محادثة ثم الرجوع لها. NULL للرسائل التي ما مرّت
+                    -- بمرحلة تفكير (أو المحفوظة قبل هذا العمود).
+                    ALTER TABLE conversations ADD COLUMN IF NOT EXISTS reasoning TEXT;
                 """)
                 cur.execute("""
                     -- ذاكرة طويلة المدى: ملخص واحد لكل محادثة، يُحدَّث
@@ -191,7 +197,8 @@ def verify_user(email, password):
 
 # ─── المحادثات ──────────────────────────────────────────────────
 def save_message(chat_id, user_email, user_name, user_message, ai_response,
-                  raw_ai, mode, image_url=None, file_name=None, uploaded_image_path=None):
+                  raw_ai, mode, image_url=None, file_name=None, uploaded_image_path=None,
+                  reasoning=None):
     """يحفظ الرسالة ويرجّع id الصف الجديد (يُستخدم لاحقاً لإعادة توليد دقيقة)."""
     if not db_pool:
         return None
@@ -200,11 +207,11 @@ def save_message(chat_id, user_email, user_name, user_message, ai_response,
             with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO conversations
-                        (chat_id, user_email, user_name, user_message, ai_response, raw_ai, mode, image_url, file_name, uploaded_image_path)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        (chat_id, user_email, user_name, user_message, ai_response, raw_ai, mode, image_url, file_name, uploaded_image_path, reasoning)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """, (chat_id, user_email, user_name, user_message, ai_response, raw_ai, mode,
-                      image_url, file_name, uploaded_image_path))
+                      image_url, file_name, uploaded_image_path, reasoning))
                 new_id = cur.fetchone()['id']
             conn.commit()
         return new_id
@@ -275,7 +282,7 @@ def get_chat_messages(chat_id, user_email, limit=None):
                     cur.execute("""
                         SELECT * FROM (
                             SELECT id, user_message, ai_response, raw_ai, image_url, file_name,
-                                   uploaded_image_path, created_at
+                                   uploaded_image_path, reasoning, created_at
                             FROM conversations
                             WHERE chat_id = %s AND user_email = %s
                             ORDER BY id DESC
@@ -285,7 +292,7 @@ def get_chat_messages(chat_id, user_email, limit=None):
                 else:
                     cur.execute("""
                         SELECT id, user_message, ai_response, raw_ai, image_url, file_name,
-                               uploaded_image_path, created_at
+                               uploaded_image_path, reasoning, created_at
                         FROM conversations
                         WHERE chat_id = %s AND user_email = %s
                         ORDER BY created_at ASC

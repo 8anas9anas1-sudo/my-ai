@@ -74,6 +74,11 @@ function setMode(m, save = true) {
   currentMode = m;
   if (save) localStorage.setItem('mode', m);
   document.querySelectorAll('.mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
+  // وضع المبرمج له هوية بصرية مختلفة فعلياً (CSS تحت body[data-app-mode="coder"])
+  // — لا مجرد تغيير لون تمييزي. نضيف/نحذف السمة بدل تركها فارغة حتى ما
+  // تُطابق بالخطأ أي selector بقيمة فارغة.
+  if (m === 'coder') document.body.setAttribute('data-app-mode', 'coder');
+  else document.body.removeAttribute('data-app-mode');
 
   const meta = MODE_META[m] || MODE_META.fast;
   const pillIcon = document.getElementById('modePillIcon');
@@ -231,7 +236,7 @@ async function loadChatFromDb(chatId) {
     chats[chatId] = messages.map(m => ({
       id: m.id, user: m.user_message, ai: m.ai_response,
       rawAi: m.raw_ai, imageUrl: m.image_url, fileName: m.file_name,
-      userImageUrl: m.uploaded_image_url
+      userImageUrl: m.uploaded_image_url, reasoning: m.reasoning || ''
     }));
     saveChats();
     return true;
@@ -311,7 +316,7 @@ function renderChat() {
             <button class="msg-btn" onclick="copyText(${i})"><i class="fa-solid fa-copy"></i> نسخ الكل</button>
             <button class="msg-btn" onclick="regenerate(${i})"><i class="fa-solid fa-rotate"></i> إعادة</button>
             <button class="msg-btn" id="speak-btn-${i}" onclick="speakMessage(${i})"><i class="fa-solid fa-volume-high"></i> استماع</button>
-            ${hasReasoning ? `<button class="msg-btn" id="reasoning-btn-${i}" onclick="toggleReasoningPanel(${i})"><i class="fa-solid fa-brain"></i> عرض التفكير</button>` : ''}
+            ${hasReasoning ? `<button class="msg-btn" id="reasoning-btn-${i}" onclick="toggleReasoningPanel(${i})"><img class="msg-btn-icon" src="/static/images/logo.png" alt=""> عرض التفكير</button>` : ''}
           </div>
           ${hasReasoning ? `<div class="reasoning-panel" id="reasoning-${i}">${escHtml(m.reasoning)}</div>` : ''}
         `}
@@ -319,17 +324,53 @@ function renderChat() {
   });
   requestAnimationFrame(() => {
     document.querySelectorAll('.ai-msg pre').forEach(pre => {
-      if (pre.querySelector('.code-header')) return;
+      if (pre.querySelector('.code-header') || pre.querySelector('.file-header')) return;
       const code = pre.querySelector('code');
+      const codeText = code ? code.innerText : '';
       const lang = (pre.dataset.lang || code?.className?.replace('lang-','') || 'code').toLowerCase();
+      const filename = pre.dataset.filename || '';
       const header = document.createElement('div');
-      header.className = 'code-header';
-      header.innerHTML = `<span class="code-lang-badge">${lang}</span>
-        <button class="copy-code-btn" onclick="copyCodeBlock(this)">
-          <i class="fa-regular fa-copy"></i> نسخ
-        </button>`;
+      if (filename) {
+        // ملف حقيقي (صيغة lang:path من وضع المبرمج) — رأس مختلف فيه اسم
+        // الملف وحجمه وزر "تحميل" حقيقي، بدل بادج اللغة العادي.
+        pre.classList.add('file-block');
+        header.className = 'file-header';
+        header.innerHTML = `
+          <span class="file-header-name"><i class="fa-solid fa-file-code"></i><bdi class="file-header-path">${escHtml(filename)}</bdi></span>
+          <span class="file-header-actions">
+            <span class="file-header-size">${humanFileSize(new Blob([codeText]).size)}</span>
+            <button class="copy-code-btn" onclick="copyCodeBlock(this)" title="نسخ الكود">
+              <i class="fa-regular fa-copy"></i>
+            </button>
+            <button class="download-file-btn" onclick="downloadCodeBlock(this)" title="تحميل الملف">
+              <i class="fa-solid fa-download"></i> تحميل
+            </button>
+          </span>`;
+      } else {
+        header.className = 'code-header';
+        header.innerHTML = `<span class="code-lang-badge">${lang}</span>
+          <button class="copy-code-btn" onclick="copyCodeBlock(this)">
+            <i class="fa-regular fa-copy"></i> نسخ
+          </button>`;
+      }
       pre.insertBefore(header, pre.firstChild);
     });
+
+    // شريط "تحميل المشروع كـ ZIP" — يظهر فوق أول ملف لو نفس الرد فيه
+    // ملفين أو أكثر (مشروع كامل)، لا ملف واحد بذاته.
+    document.querySelectorAll('.ai-msg').forEach(msg => {
+      if (msg.querySelector('.project-zip-bar')) return;
+      const fileBlocks = msg.querySelectorAll('pre.file-block');
+      if (fileBlocks.length < 2) return;
+      const bar = document.createElement('div');
+      bar.className = 'project-zip-bar';
+      bar.innerHTML = `<span><i class="fa-solid fa-box-archive"></i> ${fileBlocks.length} ملفات جاهزة</span>
+        <button class="download-zip-btn" onclick="downloadProjectZip(this)">
+          <i class="fa-solid fa-file-zipper"></i> تحميل المشروع كـ ZIP
+        </button>`;
+      msg.insertBefore(bar, fileBlocks[0]);
+    });
+
     window.scrollTo(0, document.body.scrollHeight);
   });
 }
@@ -358,7 +399,7 @@ const TOOL_STATUS_LABELS = {
 function updateStatusIndicator(index, label) {
   const el = document.getElementById('msg-' + index);
   if (el) {
-    el.innerHTML = `<div class="status-indicator"><span class="status-dot"></span>${escHtml(label)}</div>`;
+    el.innerHTML = `<div class="status-indicator"><img class="status-icon" src="/static/images/logo.png" alt="">${escHtml(label)}</div>`;
     window.scrollTo(0, document.body.scrollHeight);
   }
 }
@@ -384,6 +425,74 @@ function copyCodeBlock(btn) {
       btn.innerHTML = '<i class="fa-regular fa-copy"></i> نسخ';
     }, 2000);
   }).catch(() => showToast('تعذر النسخ', 'error'));
+}
+
+function humanFileSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  const kb = bytes / 1024;
+  if (kb < 1024) return kb.toFixed(1) + ' KB';
+  return (kb / 1024).toFixed(1) + ' MB';
+}
+
+// تحميل ملف واحد فعلياً (Blob + رابط تحميل مؤقت) — لا نسخ نص فقط.
+// المتصفح ما يقدر ينشئ مجلدات فرعية حقيقية بالتحميل، فنستخدم اسم
+// الملف الأخير من المسار فقط؛ المسار الكامل يبقى ظاهراً برأس البلوك
+// نفسه حتى يعرف المستخدم وين يحط الملف يدوياً لو المشروع بمجلدات.
+function downloadCodeBlock(btn) {
+  const pre = btn.closest('pre');
+  const code = pre.querySelector('code');
+  const filename = pre.dataset.filename || 'file.txt';
+  const text = code ? code.innerText : '';
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename.split('/').pop() || 'file.txt';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  showToast(`تم تحميل ${filename}`, 'success');
+}
+
+// تحميل كل ملفات نفس الرد كـ ZIP واحد (JSZip من cdnjs، محمّل بـindex.html)
+// — يحافظ على مسارات الملفات الفرعية كاملة داخل الأرشيف نفسه.
+async function downloadProjectZip(btn) {
+  if (typeof JSZip === 'undefined') {
+    showToast('تعذر تحميل أداة الضغط — تحقق من الاتصال وأعد المحاولة', 'error');
+    return;
+  }
+  const msg = btn.closest('.ai-msg');
+  const fileBlocks = msg ? msg.querySelectorAll('pre.file-block') : [];
+  if (!fileBlocks.length) return;
+
+  const zip = new JSZip();
+  fileBlocks.forEach(pre => {
+    const filename = pre.dataset.filename || 'file.txt';
+    const code = pre.querySelector('code');
+    zip.file(filename, code ? code.innerText : '');
+  });
+
+  const originalHtml = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> جاري الضغط...';
+  try {
+    const blob = await zip.generateAsync({ type: 'blob' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'project.zip';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    showToast(`تم تحميل ${fileBlocks.length} ملفات كـ ZIP`, 'success');
+  } catch (e) {
+    showToast('تعذر إنشاء ملف ZIP', 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = originalHtml;
+  }
 }
 
 function escHtml(t) {

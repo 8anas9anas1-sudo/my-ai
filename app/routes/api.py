@@ -270,12 +270,9 @@ def chat():
             new_id = save_message(
                 chat_id=chat_id, user_email=user_email, user_name=user_name,
                 user_message=original_raw_message, ai_response=formatted,
-                raw_ai=full_raw, mode=mode, file_name=file_name
+                raw_ai=full_raw, mode=mode, file_name=file_name,
+                reasoning=full_reasoning or None
             )
-        # ملاحظة: تفكير الموديل (reasoning) لا يُخزَّن بقاعدة البيانات حالياً
-        # — يبقى متاحاً فقط بجلسة المتصفح الحالية (يختفي لو المستخدم بدّل
-        # محادثة ثم رجع لها، أو حدّث الصفحة). لو حبيت تخزينه دائماً لاحقاً،
-        # يحتاج عمود جديد بجدول الرسائل + تمريره هنا لـsave_message.
         yield _sse('done', response=formatted, rawResponse=full_raw, id=new_id,
                    reasoning=full_reasoning or None)
 
