@@ -45,7 +45,6 @@ body::before {
   background-clip:text; background-size:200%;
   animation:shimmer 4s linear infinite;
 }
-.logo-spark { color:#00d2ff; font-size:0.7em; }
 @keyframes shimmer{0%{background-position:0%}100%{background-position:200%}}
 .subtitle { text-align:center; color:rgba(232,234,246,0.5); font-size:14px; margin-bottom:32px; }
 .tabs {

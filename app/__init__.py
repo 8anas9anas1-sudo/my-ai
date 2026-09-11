@@ -111,5 +111,35 @@ def create_app():
             'auth.html', mode='login', title='تسجيل الدخول', error=friendly
         ), 400
 
+    # ─── معالج شامل لأي خطأ غير متوقع (500) ────────────────────────
+    # بدون هذا، أي استثناء غير متوقّع بأي مكان بالكود (DB، Groq، أي
+    # سطر ناسينا نلفّه بـ try/except) يوصل لصفحة خطأ HTML افتراضية من
+    # Flask — الواجهة (app.js) ما تقدر تفهم منها شيء فترجع رسالة عامة
+    # "خطأ في الخادم" بلا أي تفاصيل، لا للمستخدم ولا لنا بالسجلات.
+    # هذا المعالج: (1) يسجّل الخطأ الحقيقي كاملاً بالسجلات (exc_info)
+    # حتى نقدر نشخّصه فعلياً من سجلات Render، و(2) يرجّع رسالة واضحة
+    # بنفس القناة اللي الواجهة تتوقعها (SSE لـ/api/chat، JSON للباقي
+    # تحت /api/) — نفس فلسفة معالجي 429 وCSRFError أعلاه بالضبط.
+    # نستثني HTTPException (404، 405، إلخ) ونخليها تاخذ سلوكها
+    # الافتراضي الطبيعي — هذا المعالج لأخطائنا نحن فقط.
+    from werkzeug.exceptions import HTTPException
+
+    @app.errorhandler(Exception)
+    def unhandled_error_handler(e):
+        from flask import jsonify, Response
+        if isinstance(e, HTTPException):
+            return e
+        log.error(f"خطأ غير متوقع لم يُعالَج ({request.path}): {e}", exc_info=True)
+        friendly = "⚠️ صار خطأ غير متوقع من جهتنا. حاول مرة ثانية، ولو تكرر معك خبّرنا."
+        if request.path == '/api/chat':
+            from app.routes.api import _sse
+
+            def _unexpected():
+                yield _sse('done', response=friendly, rawResponse="", id=None)
+            return Response(_unexpected(), mimetype='text/event-stream')
+        if request.path.startswith('/api/'):
+            return jsonify({"error": friendly}), 500
+        return friendly, 500
+
     log.info("التطبيق جاهز")
     return app

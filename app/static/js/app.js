@@ -295,17 +295,26 @@ function renderChat() {
       : (m.ai || '');
     let imgHtml = '';
     if (m.imageUrl) imgHtml = `<br><img class="generated-img" src="${escHtml(m.imageUrl)}" alt="صورة مولدة" loading="lazy" onclick="window.open(this.src,'_blank')">`;
+    // لوحة "عرض التفكير" تظهر فقط لو الرد فعلاً مرّ بمرحلة تفكير/بحث
+    // (m.reasoning موجود) — رسائل معاد تحميلها من قاعدة البيانات (بعد
+    // تبديل محادثة أو تحديث الصفحة) ما فيها هذا الحقل، فالزر يختفي بهدوء
+    // بدل ما يظهر فاضياً — التفكير غير مخزَّن دائماً، بجلسة العرض الحالية بس.
+    const hasReasoning = !isTyping && !!(m.reasoning && m.reasoning.trim());
     c.innerHTML += `
       <div class="message">
         <div class="user-msg">${userContent}</div>
       </div>
       <div class="message">
         <div class="ai-msg" id="msg-${i}">${aiContent}${imgHtml}</div>
-        ${isTyping ? '' : `<div class="msg-actions">
-          <button class="msg-btn" onclick="copyText(${JSON.stringify(m.rawAi || m.ai)})"><i class="fa-solid fa-copy"></i> نسخ الكل</button>
-          <button class="msg-btn" onclick="regenerate(${i})"><i class="fa-solid fa-rotate"></i> إعادة</button>
-          <button class="msg-btn" id="speak-btn-${i}" onclick="speakMessage(${i})"><i class="fa-solid fa-volume-high"></i> استماع</button>
-        </div>`}
+        ${isTyping ? '' : `
+          <div class="msg-actions">
+            <button class="msg-btn" onclick="copyText(${i})"><i class="fa-solid fa-copy"></i> نسخ الكل</button>
+            <button class="msg-btn" onclick="regenerate(${i})"><i class="fa-solid fa-rotate"></i> إعادة</button>
+            <button class="msg-btn" id="speak-btn-${i}" onclick="speakMessage(${i})"><i class="fa-solid fa-volume-high"></i> استماع</button>
+            ${hasReasoning ? `<button class="msg-btn" id="reasoning-btn-${i}" onclick="toggleReasoningPanel(${i})"><i class="fa-solid fa-brain"></i> عرض التفكير</button>` : ''}
+          </div>
+          ${hasReasoning ? `<div class="reasoning-panel" id="reasoning-${i}">${escHtml(m.reasoning)}</div>` : ''}
+        `}
       </div>`;
   });
   requestAnimationFrame(() => {
@@ -336,6 +345,33 @@ function updateStreamingContent(index, rawText) {
   }
 }
 
+// أسماء أدوات Groq المدمجة (config.py → BUILTIN_TOOLS) مقابل نص عربي
+// مفهوم يظهر بمؤشر الحالة الحي.
+const TOOL_STATUS_LABELS = {
+  browser_search: 'يبحث في الويب...',
+  code_interpreter: 'ينفذ كوداً...',
+};
+
+// يستبدل نقاط الكتابة الثابتة (اللي كانت تفضل مجمّدة طول مرحلة التفكير/
+// البحث بصمت تام) بمؤشر حالة حي — نفس عنصر الفقاعة (#msg-{index})، بدون
+// إعادة بناء الشات بالكامل، تماماً بنفس منطق updateStreamingContent أعلاه.
+function updateStatusIndicator(index, label) {
+  const el = document.getElementById('msg-' + index);
+  if (el) {
+    el.innerHTML = `<div class="status-indicator"><span class="status-dot"></span>${escHtml(label)}</div>`;
+    window.scrollTo(0, document.body.scrollHeight);
+  }
+}
+
+// طي/فتح لوحة "عرض التفكير" — تعديل DOM مباشر بدل renderChat() الكامل،
+// حتى لا يقطع أي بث حي شغّال بنفس اللحظة على رسالة تانية.
+function toggleReasoningPanel(i) {
+  const panel = document.getElementById('reasoning-' + i);
+  const btn = document.getElementById('reasoning-btn-' + i);
+  if (panel) panel.classList.toggle('open');
+  if (btn) btn.classList.toggle('reasoning-open');
+}
+
 function copyCodeBlock(btn) {
   const pre = btn.closest('pre');
   const code = pre.querySelector('code');
@@ -360,7 +396,7 @@ function escHtml(t) {
 // ─── Streaming (SSE عبر fetch) ─────────────────────────────────
 // نتعامل مع البث عبر fetch + ReadableStream بدل EventSource، لأن
 // EventSource يدعم GET فقط ولا يسمح بإرسال FormData/ملفات.
-async function streamChat(fd, { onFirstChunk, onChunk, onDone, onError } = {}) {
+async function streamChat(fd, { onFirstChunk, onChunk, onReasoning, onToolStart, onDone, onError } = {}) {
   let r;
   try {
     r = await fetch('/api/chat', { method: 'POST', headers: { 'X-CSRFToken': CSRF_TOKEN }, body: fd });
@@ -394,6 +430,10 @@ async function streamChat(fd, { onFirstChunk, onChunk, onDone, onError } = {}) {
         if (!gotFirstChunk) { gotFirstChunk = true; onFirstChunk && onFirstChunk(); }
         raw += evt.content;
         onChunk && onChunk(raw);
+      } else if (evt.type === 'reasoning') {
+        onReasoning && onReasoning(evt.content);
+      } else if (evt.type === 'tool_start') {
+        onToolStart && onToolStart(evt.tool);
       } else if (evt.type === 'error') {
         onError && onError(evt.error || 'حدث خطأ');
       } else if (evt.type === 'done') {
@@ -437,11 +477,19 @@ async function sendMessage() {
 
   try {
     await streamChat(fd, {
+      // أول إشارة تفكير أو استدعاء أداة توصل تبدّل نقاط الكتابة المجمّدة
+      // بمؤشر حالة حي — بدل ما تفضل الفقاعة بلا أي تحديث طول مدة
+      // التفكير/البحث ثم يظهر الرد كامل دفعة واحدة (المشكلة الأصلية).
+      onReasoning: () => { if (c[msgIndex].ai === '__typing__') updateStatusIndicator(msgIndex, 'يفكر...'); },
+      onToolStart: (tool) => {
+        if (c[msgIndex].ai === '__typing__') updateStatusIndicator(msgIndex, TOOL_STATUS_LABELS[tool] || 'يعمل...');
+      },
       onFirstChunk: () => { c[msgIndex].ai = ''; },
       onChunk: (rawAccum) => { c[msgIndex].ai = rawAccum; updateStreamingContent(msgIndex, rawAccum); },
       onDone: (evt) => {
         c[msgIndex].ai = evt.response;
         c[msgIndex].rawAi = evt.rawResponse || evt.response;
+        c[msgIndex].reasoning = evt.reasoning || '';
         c[msgIndex].id = evt.id;
         if (evt.imageUrl) c[msgIndex].imageUrl = evt.imageUrl;
         // الرابط الدائم من التخزين يستبدل المعاينة المؤقتة (لو التخزين
@@ -501,10 +549,15 @@ async function regenerate(i) {
   if (c[i].id) fd.append('regenerate_message_id', c[i].id);
   try {
     await streamChat(fd, {
+      onReasoning: () => { if (c[i].ai === '__typing__') updateStatusIndicator(i, 'يفكر...'); },
+      onToolStart: (tool) => {
+        if (c[i].ai === '__typing__') updateStatusIndicator(i, TOOL_STATUS_LABELS[tool] || 'يعمل...');
+      },
       onFirstChunk: () => { c[i].ai = ''; },
       onChunk: (rawAccum) => { c[i].ai = rawAccum; updateStreamingContent(i, rawAccum); },
       onDone: (evt) => {
         c[i].ai = evt.response; c[i].rawAi = evt.rawResponse || evt.response;
+        c[i].reasoning = evt.reasoning || '';
         c[i].id = evt.id;
         if (evt.imageUrl) c[i].imageUrl = evt.imageUrl; else delete c[i].imageUrl;
         saveChats(); renderChat();
@@ -538,11 +591,14 @@ function useTemplate(t) {
   const inp = document.getElementById('messageInput');
   inp.value = t; inp.focus(); autoResize(inp);
 }
-function copyText(t) {
+function copyText(i) {
+  const c = chats[currentChatId] || [];
+  const raw = (c[i] && (c[i].rawAi || c[i].ai)) || '';
   const tmp = document.createElement('div');
-  tmp.innerHTML = t;
-  navigator.clipboard.writeText(tmp.textContent || t);
-  showToast('تم النسخ', 'success');
+  tmp.innerHTML = raw;
+  navigator.clipboard.writeText(tmp.textContent || raw)
+    .then(() => showToast('تم النسخ', 'success'))
+    .catch(() => showToast('تعذر النسخ', 'error'));
 }
 function saveChats() {
   try { localStorage.setItem('chats', JSON.stringify(chats)); }
@@ -745,6 +801,10 @@ const VoiceMode = {
   speechDetected: false,
   silenceStartTime: null,
   recordStartTime: null,
+  currentVolume: 0,         // آخر RMS خام من المايك — يقرأه VoiceViz كل فريم أثناء الاستماع
+  ttsAnalyser: null,        // Analyser مربوط بمقطع الكلام الحالي (وضع المكالمة فقط)
+  ttsAnalyserData: null,
+  ttsSourceNode: null,
 };
 
 const VAD_SILENCE_THRESHOLD = 0.02;     // مستوى صوت أقل من هذا = صمت — يحتاج ضبطاً فعلياً بعد أول تجربة حية
@@ -769,12 +829,14 @@ function enterVoiceMode() {
   if (transcript) transcript.textContent = '';
   document.getElementById('voiceModeOverlay').classList.remove('hidden');
   VoiceMode.state = 'listening';  // يُضبط فوراً حتى startVoiceListening ما يرفض نفسه
+  startVoiceViz();
   startVoiceListening();
 }
 
 function exitVoiceMode() {
   const wasListening = VoiceMode.state === 'listening';
   VoiceMode.state = 'idle';
+  stopVoiceViz();
   if (VoiceMode.vadRafId) { cancelAnimationFrame(VoiceMode.vadRafId); VoiceMode.vadRafId = null; }
   if (wasListening && VoiceMode.mediaRecorder && VoiceMode.mediaRecorder.state === 'recording') {
     VoiceMode.mediaRecorder.stop();
@@ -816,6 +878,7 @@ function setupVAD(stream) {
   if (!VoiceMode.audioContext || VoiceMode.audioContext.state === 'closed') {
     VoiceMode.audioContext = new (window.AudioContext || window.webkitAudioContext)();
   }
+  if (VoiceMode.audioContext.state === 'suspended') VoiceMode.audioContext.resume().catch(() => {});
   const source = VoiceMode.audioContext.createMediaStreamSource(stream);
   const analyser = VoiceMode.audioContext.createAnalyser();
   analyser.fftSize = 512;
@@ -831,6 +894,7 @@ function setupVAD(stream) {
       sumSquares += v * v;
     }
     const rms = Math.sqrt(sumSquares / data.length);
+    VoiceMode.currentVolume = rms;  // يقرأها VoiceViz لرسم الموجة أثناء الاستماع
     const now = Date.now();
 
     if (rms > VAD_SILENCE_THRESHOLD) {
@@ -902,13 +966,246 @@ async function handleVoiceRecordingStopped(mimeType) {
 
 function setVoiceState(state) {
   VoiceMode.state = state;
-  const orb = document.getElementById('voiceOrb');
+  updateVoiceVizGlow();
+  if (VoiceViz.reduceMotion) drawVoiceOrb(performance.now());  // تفضيل تقليل الحركة: لقطة هادئة بدل حلقة رسم مستمرة
   const status = document.getElementById('voiceStatus');
-  if (orb) orb.className = 'voice-orb voice-orb-' + state;
   const labels = { listening: 'جاري الاستماع...', processing: 'جاري التفكير...', speaking: 'يتكلم...' };
   if (status) status.textContent = labels[state] || '';
   const stopBtn = document.getElementById('voiceModeStopBtn');
   if (stopBtn) stopBtn.classList.toggle('hidden', state !== 'listening');
+}
+
+// ─── تصور بصري تفاعلي لوضع المكالمة (كرة موجات حقيقية) ─────────
+// كانت الكرة القديمة CSS keyframes بإيقاع ثابت دايماً — فبتحس نفس
+// "نطة نابض" بغض النظر عن الصوت الفعلي. البديل هنا: canvas يرسم
+// كل فريم بناءً على شدة صوت حقيقية (RMS): من المايك أثناء الاستماع
+// (نفس تحليل VAD أعلاه)، ومن مقطع TTS نفسه أثناء الكلام عبر
+// Web Audio Analyser مربوط بعنصر <audio>. الاستجابة سريعة للصعود
+// وبطيئة جداً للنزول (VOICE_AMP_RISE/FALL) — هذا اللي يعطي إحساس
+// "الموجة تكبر وتهدأ بسلاسة" المطلوب، مو قفزة مفاجئة.
+// ملاحظة صراحة (نفس ملاحظة VAD فوق): ما عندي متصفح/مايك فعلي هنا
+// لأختبرها بصوت بشري حقيقي، فالقيم أسفل (كل amp*/RMS_SCALE) قيم
+// معقولة نظرياً بس ممكن تحتاج ضبط بسيط بعد أول تجربة حية عندك —
+// لو حسيتها هادئة جداً أو حادة جداً، عدّل VOICE_RMS_MIC_SCALE أو
+// VOICE_RMS_TTS_SCALE أدناه (تكبيرها = استجابة أقوى للصوت نفسه).
+// نقطة تقنية أخرى تستاهل تجربة حية: بعض المتصفحات ممكن "تعزل"
+// بيانات عنصر <audio> اللي مصدره data: URI عن الـ Analyser (حماية
+// خصوصية قياسية)، وإذا صار هذا، الصوت بيشتغل عادي بس الموجة وقت
+// الكلام بترجع تلقائياً لحركة تنفّس هادئة بدل التفاعل الحقيقي —
+// مافيه انكسار بالميزة، بس يستاهل ملاحظة لو صار.
+const VoiceViz = {
+  canvas: null, ctx: null, wrap: null,
+  raf: null, running: false,
+  dpr: 1, size: 180,
+  amp: 0,
+  lastT: 0,
+  ripples: [],
+  reduceMotion: false,
+};
+
+const VOICE_RMS_MIC_SCALE = 7;    // يحوّل RMS المايك الخام (صغير عادة) لمدى تقريبي 0..1
+const VOICE_RMS_TTS_SCALE = 5;    // نفس الفكرة لمقاطع صوت Wadi أثناء الكلام
+const VOICE_AMP_RISE = 0.35;      // سرعة استجابة الموجة صعوداً (لحظة ارتفاع الصوت)
+const VOICE_AMP_FALL = 0.06;      // سرعة الهبوط — بطيئة عمداً: "تخف بهدوء" مو توقف فجأة
+
+function initVoiceViz() {
+  VoiceViz.canvas = document.getElementById('voiceOrbCanvas');
+  VoiceViz.wrap = document.getElementById('voiceOrbWrap');
+  if (!VoiceViz.canvas) return;
+  VoiceViz.ctx = VoiceViz.canvas.getContext('2d');
+  VoiceViz.reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  VoiceViz.dpr = Math.min(window.devicePixelRatio || 1, 2);
+  VoiceViz.canvas.width = VoiceViz.size * VoiceViz.dpr;
+  VoiceViz.canvas.height = VoiceViz.size * VoiceViz.dpr;
+  VoiceViz.ctx.setTransform(VoiceViz.dpr, 0, 0, VoiceViz.dpr, 0, 0);
+}
+
+function voiceVizColors(mode) {
+  const css = getComputedStyle(document.documentElement);
+  const c1 = css.getPropertyValue('--accent1').trim() || '#00d2ff';
+  const c2 = css.getPropertyValue('--accent2').trim() || '#00ff94';
+  const c3 = css.getPropertyValue('--accent3').trim() || '#7c4dff';
+  if (mode === 'processing') return { main: c3, sub: c1, glow: 'rgba(124,77,255,0.45)' };
+  if (mode === 'speaking') return { main: c2, sub: c1, glow: 'rgba(0,255,148,0.45)' };
+  return { main: c1, sub: c2, glow: 'rgba(0,210,255,0.4)' };  // listening وأي حالة افتراضية
+}
+
+function updateVoiceVizGlow() {
+  if (!VoiceViz.wrap) return;
+  VoiceViz.wrap.style.setProperty('--orb-glow-color', voiceVizColors(VoiceMode.state).glow);
+}
+
+function startVoiceViz() {
+  if (!VoiceViz.canvas) return;
+  VoiceViz.amp = 0;
+  VoiceViz.ripples = [];
+  updateVoiceVizGlow();
+  if (VoiceViz.reduceMotion) {
+    VoiceViz.running = false;
+    drawVoiceOrb(performance.now());  // لقطة واحدة هادئة بدل حركة مستمرة
+    return;
+  }
+  VoiceViz.running = true;
+  VoiceViz.lastT = performance.now();
+  if (VoiceViz.raf) cancelAnimationFrame(VoiceViz.raf);
+  VoiceViz.raf = requestAnimationFrame(voiceVizFrame);
+}
+
+function stopVoiceViz() {
+  VoiceViz.running = false;
+  if (VoiceViz.raf) { cancelAnimationFrame(VoiceViz.raf); VoiceViz.raf = null; }
+  if (VoiceMode.ttsSourceNode) { try { VoiceMode.ttsSourceNode.disconnect(); } catch (e) {} }
+  if (VoiceMode.ttsAnalyser) { try { VoiceMode.ttsAnalyser.disconnect(); } catch (e) {} }
+  VoiceMode.ttsSourceNode = null;
+  VoiceMode.ttsAnalyser = null;
+}
+
+function voiceTargetAmplitude() {
+  if (VoiceMode.state === 'listening') {
+    return Math.min(1, (VoiceMode.currentVolume || 0) * VOICE_RMS_MIC_SCALE);
+  }
+  if (VoiceMode.state === 'speaking' && VoiceMode.ttsAnalyser && VoiceMode.ttsAnalyserData) {
+    VoiceMode.ttsAnalyser.getByteTimeDomainData(VoiceMode.ttsAnalyserData);
+    let sum = 0;
+    const d = VoiceMode.ttsAnalyserData;
+    for (let i = 0; i < d.length; i++) { const v = (d[i] - 128) / 128; sum += v * v; }
+    return Math.min(1, Math.sqrt(sum / d.length) * VOICE_RMS_TTS_SCALE);
+  }
+  return 0;  // processing / idle — التنفّس الهادئ بداخل drawVoiceOrb يتكفّل بالحركة
+}
+
+function voiceVizFrame(now) {
+  if (!VoiceViz.running) return;
+  const dt = Math.min(64, now - VoiceViz.lastT);  // سقف يمنع قفزة الحركة لو الصفحة كانت بالخلفية
+  VoiceViz.lastT = now;
+
+  const target = voiceTargetAmplitude();
+  const rate = target > VoiceViz.amp ? VOICE_AMP_RISE : VOICE_AMP_FALL;
+  const prevAmp = VoiceViz.amp;
+  VoiceViz.amp += (target - VoiceViz.amp) * rate * (dt / 16.67);
+  if (VoiceViz.amp < 0.002) VoiceViz.amp = 0;
+
+  // ريبل جديد (حلقة تنبعث كالماء) عند قفزة صوت واضحة فقط — لا كل فريم
+  if (VoiceViz.amp - prevAmp > 0.16 && VoiceViz.ripples.length < 4) {
+    VoiceViz.ripples.push({ r: 44, alpha: 0.5 });
+  }
+
+  drawVoiceOrb(now);
+  VoiceViz.raf = requestAnimationFrame(voiceVizFrame);
+}
+
+function drawVoiceOrb(now) {
+  const ctx = VoiceViz.ctx;
+  if (!ctx) return;
+  const s = VoiceViz.size, cx = s / 2, cy = s / 2;
+  ctx.clearRect(0, 0, s, s);
+
+  const colors = voiceVizColors(VoiceMode.state);
+  const amp = VoiceViz.reduceMotion ? 0.15 : VoiceViz.amp;
+  const t = now / 1000;
+
+  const breathe = VoiceViz.reduceMotion ? 0 : (Math.sin(t * 0.9) * 0.5 + 0.5);  // تنفّس هادئ دائم حتى بصمت
+  const restWobble = 3 + breathe * 3;
+  const baseR = 40 + amp * 14;
+  const wobbleAmp = restWobble + amp * 20;
+
+  if (!VoiceViz.reduceMotion) {
+    for (let i = VoiceViz.ripples.length - 1; i >= 0; i--) {
+      const rp = VoiceViz.ripples[i];
+      rp.r += 0.9 + amp * 1.8;
+      rp.alpha *= 0.955;
+      if (rp.alpha < 0.03 || rp.r > 82) { VoiceViz.ripples.splice(i, 1); continue; }
+      ctx.beginPath();
+      ctx.arc(cx, cy, rp.r, 0, Math.PI * 2);
+      ctx.strokeStyle = colorToRgba(colors.main, rp.alpha * 0.55);
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
+    }
+  }
+
+  drawWaveBlob(ctx, cx, cy, baseR + 4, wobbleAmp * 0.8, 5, t * 1.3, colors.sub, 0.18 + amp * 0.22);
+  drawWaveBlob(ctx, cx, cy, baseR, wobbleAmp, 4, t * 1.7 + 2, colors.main, 0.30 + amp * 0.35);
+
+  const core = ctx.createRadialGradient(cx, cy, 0, cx, cy, baseR * 0.9);
+  core.addColorStop(0, colorToRgba('#ffffff', 0.9));
+  core.addColorStop(0.35, colorToRgba(colors.main, 0.85));
+  core.addColorStop(1, colorToRgba(colors.main, 0));
+  ctx.beginPath();
+  ctx.arc(cx, cy, baseR * 0.62, 0, Math.PI * 2);
+  ctx.fillStyle = core;
+  ctx.fill();
+
+  if (VoiceMode.state === 'processing' && !VoiceViz.reduceMotion) {
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(t * 1.1);
+    ctx.beginPath();
+    ctx.arc(0, 0, baseR + 13, -0.5, 0.9);
+    ctx.strokeStyle = colorToRgba(colors.sub, 0.55);
+    ctx.lineWidth = 3;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawWaveBlob(ctx, cx, cy, baseR, wobbleAmp, freq, phase, color, alpha) {
+  const points = 72;
+  ctx.beginPath();
+  for (let i = 0; i <= points; i++) {
+    const angle = (i / points) * Math.PI * 2;
+    const wobble = Math.sin(angle * freq + phase) * wobbleAmp
+                 + Math.sin(angle * (freq * 0.5) - phase * 0.6) * wobbleAmp * 0.4;
+    const r = baseR + wobble;
+    const x = cx + Math.cos(angle) * r;
+    const y = cy + Math.sin(angle) * r;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  const grad = ctx.createRadialGradient(cx, cy, baseR * 0.2, cx, cy, baseR + wobbleAmp);
+  grad.addColorStop(0, colorToRgba(color, alpha));
+  grad.addColorStop(1, colorToRgba(color, 0));
+  ctx.fillStyle = grad;
+  ctx.fill();
+}
+
+function colorToRgba(color, alpha) {
+  color = (color || '').trim();
+  if (color.startsWith('rgb')) return color;  // يقبل rgb/rgba جاهزة كما هي
+  let h = color.replace('#', '');
+  if (h.length === 3) h = h.split('').map(c => c + c).join('');
+  const num = parseInt(h, 16);
+  if (isNaN(num)) return `rgba(0,210,255,${alpha})`;
+  return `rgba(${(num >> 16) & 255},${(num >> 8) & 255},${num & 255},${alpha})`;
+}
+
+function attachTtsAnalyser(audioEl) {
+  // يُستخدم فقط داخل وضع المكالمة الصوتية الكاملة (انظر استدعاءها بأسفل
+  // playNextInQueue) — عشان ما نفتح/نربط Web Audio إضافي بلا داعي لما
+  // المستخدم يسمع رسالة عادية بزر "استماع" برّه وضع المكالمة.
+  try {
+    if (!VoiceMode.audioContext || VoiceMode.audioContext.state === 'closed') {
+      VoiceMode.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    const ctx = VoiceMode.audioContext;
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+    if (VoiceMode.ttsSourceNode) { try { VoiceMode.ttsSourceNode.disconnect(); } catch (e) {} }
+    if (VoiceMode.ttsAnalyser) { try { VoiceMode.ttsAnalyser.disconnect(); } catch (e) {} }
+    const source = ctx.createMediaElementSource(audioEl);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    source.connect(analyser);
+    analyser.connect(ctx.destination);
+    VoiceMode.ttsSourceNode = source;
+    VoiceMode.ttsAnalyser = analyser;
+    VoiceMode.ttsAnalyserData = new Uint8Array(analyser.frequencyBinCount);
+  } catch (err) {
+    // نادر، وغير قاتل: الصوت يكمل تشغيله عادي، بس الموجة ترجع لتنفّس
+    // هادئ بدل التفاعل الحقيقي (انظر ملاحظة الخصوصية بأعلى قسم VoiceViz)
+    console.error('Voice viz analyser error:', err && err.name, err && err.message);
+    VoiceMode.ttsSourceNode = null;
+    VoiceMode.ttsAnalyser = null;
+  }
 }
 
 // ─── الصوت: نص → استماع (TTS) — بث حي، يبدأ التشغيل فور أول مقطع ──
@@ -1042,6 +1339,7 @@ function playNextInQueue(msgIndex) {
   const clip = audioQueue.shift();
   const audio = new Audio('data:audio/wav;base64,' + clip);
   currentAudioPlayer = audio;
+  if (VoiceMode.state !== 'idle') attachTtsAnalyser(audio);  // داخل وضع المكالمة فقط — يغذّي الموجة بصوت الرد الفعلي
   audio.onended = () => playNextInQueue(msgIndex);
   audio.onerror = () => playNextInQueue(msgIndex);
   audio.play().catch(() => playNextInQueue(msgIndex));
@@ -1059,3 +1357,4 @@ function finishSpeaking(msgIndex) {
 // ─── Boot ─────────────────────────────────────────────────────
 init();
 initVoiceUI();
+initVoiceViz();

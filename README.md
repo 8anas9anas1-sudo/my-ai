@@ -42,6 +42,10 @@ python wsgi.py
 ## النشر على Render
 - Build command: `pip install -r requirements.txt`
 - Start command: `gunicorn wsgi:app`
+- **`gunicorn.conf.py`** (بجذر المشروع) يضبط `timeout = 300` بدل افتراضي
+  Gunicorn (30 ثانية) — بدونه أي رد بث طويل (مشروع كامل، رد "مفكر"/
+  "مبرمج" يستخدم أدوات مدمجة) يخلي الـworker يُقتل بمنتصف الرد.
+  Gunicorn يقرأه تلقائياً، بلا حاجة لتعديل Start Command.
 - أضف كل متغيرات `.env.example` في تبويب Environment.
 - **FLASK_SECRET_KEY إجباري** — التطبيق يرفض الإقلاع بدونه.
 - **REDIS_URL** موصى به بشدة لو أكثر من gunicorn worker — بدونه تحديد

@@ -204,7 +204,9 @@
     <option value="lulwa">لولوة</option>
     <option value="aisha">عائشة</option>
   </select>
-  <div class="voice-orb voice-orb-listening" id="voiceOrb"></div>
+  <div class="voice-orb-wrap" id="voiceOrbWrap">
+    <canvas class="voice-orb-canvas" id="voiceOrbCanvas"></canvas>
+  </div>
   <div class="voice-status" id="voiceStatus">جاري الاستماع...</div>
   <div class="voice-transcript" id="voiceTranscript"></div>
   <button type="button" class="voice-mode-stop-btn" id="voiceModeStopBtn" onclick="manualStopListening()">

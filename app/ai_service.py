@@ -240,6 +240,43 @@ def extract_image_prompt(user_message):
 
 
 # ─── توليد الصور ────────────────────────────────────────────────
+def translate_image_prompt(prompt):
+    """
+    يترجم وصف الصورة (غالباً عربي/دارجة) لبرومبت إنجليزي مختصر قبل
+    إرساله لـ pollinations.ai. موديل Flux وراها مدرّب أساساً على نصوص
+    إنجليزية — برومبت عربي خام كان يوصل كأنه نص عشوائي، فتطلع صورة
+    ماعلاقتها بالطلب (نفس مشكلة "ارسم سيارة" اللي طلعت بنت). عند أي
+    فشل (شبكة/مفتاح/timeout) نرجع النص الأصلي بهدوء — أحسن من ما
+    نوقف توليد الصورة بالكامل بسبب خطوة ترجمة إضافية.
+    """
+    try:
+        resp = requests.post(
+            Config.GROQ_API_URL,
+            headers={"Authorization": f"Bearer {Config.GROQ_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": Config.GROQ_MODELS['fast'],
+                "messages": [
+                    {"role": "system", "content": (
+                        "Translate/adapt the following image description into a concise, vivid "
+                        "English image-generation prompt. Reply with ONLY the English prompt — "
+                        "no quotes, no preamble, no explanation."
+                    )},
+                    {"role": "user", "content": prompt}
+                ],
+                "max_tokens": 200,
+                "temperature": 0.4,
+            },
+            timeout=15
+        )
+        result = resp.json()
+        if resp.ok and result.get("choices"):
+            translated = (result["choices"][0]["message"]["content"] or "").strip()
+            return translated or prompt
+    except Exception as e:
+        log.error(f"تعذرت ترجمة برومبت الصورة (استخدمنا النص الأصلي): {e}")
+    return prompt
+
+
 def generate_image(prompt):
     clean_prompt = prompt.strip()
     encoded = requests.utils.quote(clean_prompt)
@@ -329,9 +366,20 @@ def stream_groq_completion(model, messages, temperature, max_tokens, extra_param
     """
     مولّد Python يبث القطع (chunks) القادمة من Groq أولاً بأول (Server-Sent
     Events)، بدل انتظار الرد كاملاً. يrield tuples بصيغة (نوع, بيانات):
-      ('chunk', 'نص جزئي')  — كل ما وصل جزء جديد من الرد
+      ('chunk', 'نص جزئي')      — جزء جديد من الرد النهائي (نص الإجابة نفسه)
+      ('reasoning', 'نص جزئي')  — تفكير النموذج الداخلي أثناء التوليد؛
+                                   نماذج gpt-oss تبعثه بحقل reasoning منفصل
+                                   تلقائياً (include_reasoning=True افتراضياً
+                                   عند Groq) — يصل *قبل* أي 'chunk' فعلي على
+                                   الرسائل التي تحتاج تفكيراً أو بحثاً، لذا
+                                   يصلح كإشارة "الموديل شغّال" بدل ما تفضل
+                                   الواجهة بلا أي تحديث طول هذي المدة.
+      ('tool_start', 'اسم الأداة') — أول لحظة يبدأ فيها الموديل استخدام أداة
+                                   مدمجة (browser_search / code_interpreter)
+                                   — نبعثها مرة واحدة فقط لكل اسم أداة.
       ('error', 'رسالة الخطأ')
-      ('done', 'النص الكامل')  — دائماً آخر عنصر يُرجَع
+      ('done', 'النص الكامل')  — دائماً آخر عنصر يُرجَع (نص 'chunk' المجمّع فقط،
+                                   لا يشمل reasoning)
     """
     def _stream(m):
         return requests.post(
@@ -360,6 +408,7 @@ def stream_groq_completion(model, messages, temperature, max_tokens, extra_param
             return
 
         full_text = ""
+        seen_tools = set()
         for line in resp.iter_lines():
             if not line:
                 continue
@@ -373,10 +422,24 @@ def stream_groq_completion(model, messages, temperature, max_tokens, extra_param
                 chunk = json.loads(payload)
             except Exception:
                 continue
-            delta = (chunk.get('choices') or [{}])[0].get('delta', {}).get('content')
-            if delta:
-                full_text += delta
-                yield ('chunk', delta)
+            delta = (chunk.get('choices') or [{}])[0].get('delta', {}) or {}
+
+            content_piece = delta.get('content')
+            if content_piece:
+                full_text += content_piece
+                yield ('chunk', content_piece)
+
+            reasoning_piece = delta.get('reasoning')
+            if reasoning_piece:
+                yield ('reasoning', reasoning_piece)
+
+            # بنية tool_calls بالبث قياسية بصيغة OpenAI: قطع فيها اسم
+            # الدالة جزئياً أو كاملاً — نلتقط أول ظهور لكل اسم فقط.
+            for tc in (delta.get('tool_calls') or []):
+                name = ((tc or {}).get('function') or {}).get('name')
+                if name and name not in seen_tools:
+                    seen_tools.add(name)
+                    yield ('tool_start', name)
         yield ('done', full_text)
 
     except requests.Timeout:

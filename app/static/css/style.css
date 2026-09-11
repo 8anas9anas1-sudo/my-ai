@@ -109,7 +109,6 @@ body::before {
   background-clip:text; animation:logoShimmer 4s linear infinite; background-size:200%;
   text-shadow:none;
 }
-.logo-spark { color:var(--accent1); font-size:0.75em; }
 @keyframes logoShimmer{0%{background-position:0% 50%}100%{background-position:200% 50%}}
 
 .icon-btn {
@@ -337,7 +336,6 @@ body::before {
 ═══════════════════════════════════════════ */
 .welcome { text-align:center; padding:44px 20px; animation:fadeUp 0.6s ease both; }
 @keyframes fadeUp { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
-.welcome-icon { font-size:54px; margin-bottom:18px; animation:floatIcon 3s ease-in-out infinite; display:block; }
 .welcome-icon-img {
   width:68px; height:68px; display:block; margin:0 auto 18px;
   animation:floatIcon 3s ease-in-out infinite; filter:drop-shadow(0 0 10px rgba(0,210,255,0.3));
@@ -447,6 +445,32 @@ body::before {
   0%,60%,100%{transform:translateY(0);opacity:0.4}
   30%{transform:translateY(-8px);opacity:1}
 }
+
+/* مؤشر حالة حي أثناء التفكير/البحث — يستبدل نقاط الكتابة مؤقتاً */
+.status-indicator {
+  display:inline-flex; align-items:center; gap:8px;
+  color:var(--text-dim); font-size:14px; padding:4px 0;
+}
+.status-indicator .status-dot {
+  width:8px; height:8px; border-radius:50%; flex-shrink:0;
+  background:var(--accent1); animation:statusPulse 1.3s ease-in-out infinite;
+}
+@keyframes statusPulse {
+  0%,100%{transform:scale(0.75);opacity:0.5}
+  50%{transform:scale(1.15);opacity:1}
+}
+
+/* لوحة "عرض التفكير" — مطوية افتراضياً، يفتحها المستخدم لو حب يشوف
+   تفكير النموذج الداخلي بعد اكتمال الرد. */
+.reasoning-panel {
+  display:none; margin-top:10px; padding:12px 14px;
+  background:var(--surface2); border:1px solid var(--border);
+  border-radius:12px; font-size:13px; line-height:1.8;
+  color:var(--text-dim); white-space:pre-wrap; word-break:break-word;
+  max-height:260px; overflow-y:auto;
+}
+.reasoning-panel.open { display:block; animation:imgReveal 0.25s ease both; }
+.msg-btn.reasoning-open { color:var(--accent2); border-color:var(--accent2); }
 
 /* Message extras */
 .file-badge {
@@ -636,42 +660,30 @@ textarea::placeholder { color:var(--text-muted); }
   border-radius:10px; padding:9px 14px; font-family:inherit; font-size:13px; cursor:pointer;
 }
 
-.voice-orb {
-  width:140px; height:140px; border-radius:50%;
-  background:linear-gradient(135deg,var(--accent2),var(--accent1),var(--accent3));
-  background-size:200% 200%;
-  box-shadow:0 0 60px rgba(0,210,255,0.35);
-  transition:box-shadow 0.3s;
+/* الكرة القديمة كانت CSS keyframes ثابتة (نفس الإيقاع دايماً بغض
+   النظر عن الصوت الفعلي) — وهذا اللي يعطي إحساس "نط نابض" مزعج.
+   استبدلناها بـ canvas يرسم موجة حقيقية متجاوبة مع مستوى الصوت
+   الفعلي (من المايك أثناء الاستماع، ومن مقطع الصوت نفسه أثناء
+   الكلام) — منطقها بالكامل بملف app.js (VoiceViz). */
+.voice-orb-wrap {
+  position:relative;
+  width:180px; height:180px;
+  display:flex; align-items:center; justify-content:center;
 }
-.voice-orb-listening {
-  animation:orbListening 1.8s ease-in-out infinite, orbGradient 4s ease infinite;
+.voice-orb-wrap::before {
+  content:'';
+  position:absolute; inset:-46px;
+  border-radius:50%;
+  background:radial-gradient(circle, var(--orb-glow-color, rgba(0,210,255,0.4)) 0%, transparent 70%);
+  filter:blur(22px);
+  transition:background 0.7s ease;
+  pointer-events:none;
+  z-index:0;
 }
-.voice-orb-processing {
-  animation:orbProcessing 1s linear infinite, orbGradient 2s ease infinite;
-  box-shadow:0 0 60px rgba(124,77,255,0.45);
-}
-.voice-orb-speaking {
-  animation:orbSpeaking 0.6s ease-in-out infinite, orbGradient 3s ease infinite;
-  box-shadow:0 0 70px rgba(0,255,148,0.45);
-}
-@keyframes orbGradient {
-  0%,100% { background-position:0% 50%; }
-  50% { background-position:100% 50%; }
-}
-@keyframes orbListening {
-  0%,100% { transform:scale(1); }
-  50% { transform:scale(1.08); }
-}
-@keyframes orbProcessing {
-  0% { transform:rotate(0deg) scale(0.95); }
-  50% { transform:rotate(180deg) scale(1); }
-  100% { transform:rotate(360deg) scale(0.95); }
-}
-@keyframes orbSpeaking {
-  0%,100% { transform:scale(1); }
-  25% { transform:scale(1.12); }
-  50% { transform:scale(0.96); }
-  75% { transform:scale(1.15); }
+.voice-orb-canvas {
+  position:relative; z-index:1;
+  width:180px; height:180px;
+  display:block;
 }
 
 .voice-status {

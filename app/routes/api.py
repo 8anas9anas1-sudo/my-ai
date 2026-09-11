@@ -14,7 +14,7 @@ from app.security import sanitize_input, is_prompt_injection
 from app.ai_service import (
     MODE_PROMPTS, get_system_prompt, generate_image, format_response,
     extract_pdf_text, stream_groq_completion, call_vision_model,
-    is_image_generation_request, extract_image_prompt,
+    is_image_generation_request, extract_image_prompt, translate_image_prompt,
     transcribe_audio, synthesize_speech, strip_markdown_for_speech, split_text_for_tts,
     supports_builtin_tools,
 )
@@ -146,7 +146,8 @@ def chat():
         # ── مسار 1: توليد صورة ──
         if is_image_request:
             prompt = extract_image_prompt(user_message)
-            primary_url, _ = generate_image(prompt)
+            english_prompt = translate_image_prompt(prompt)
+            primary_url, _ = generate_image(english_prompt)
             # نخزّن الصورة بمخزننا الخاص لو التخزين مفعّل — حتى لا تعتمد
             # المحادثات القديمة على استقرار pollinations.ai على المدى
             # الطويل. لو فشل التخزين، نرجع للرابط الأصلي بهدوء.
@@ -242,12 +243,18 @@ def chat():
         final_messages = messages + [{"role": "user", "content": local_user_message or "مرحبا"}]
 
         full_raw = ""
+        full_reasoning = ""
         had_error = False
         for kind, data in stream_groq_completion(model, final_messages, temperature, max_tokens,
                                                    extra_params, fallback_model):
             if kind == 'chunk':
                 full_raw += data
                 yield _sse('chunk', content=data)
+            elif kind == 'reasoning':
+                full_reasoning += data
+                yield _sse('reasoning', content=data)
+            elif kind == 'tool_start':
+                yield _sse('tool_start', tool=data)
             elif kind == 'error':
                 had_error = True
                 yield _sse('error', error=data)
@@ -265,7 +272,12 @@ def chat():
                 user_message=original_raw_message, ai_response=formatted,
                 raw_ai=full_raw, mode=mode, file_name=file_name
             )
-        yield _sse('done', response=formatted, rawResponse=full_raw, id=new_id)
+        # ملاحظة: تفكير الموديل (reasoning) لا يُخزَّن بقاعدة البيانات حالياً
+        # — يبقى متاحاً فقط بجلسة المتصفح الحالية (يختفي لو المستخدم بدّل
+        # محادثة ثم رجع لها، أو حدّث الصفحة). لو حبيت تخزينه دائماً لاحقاً،
+        # يحتاج عمود جديد بجدول الرسائل + تمريره هنا لـsave_message.
+        yield _sse('done', response=formatted, rawResponse=full_raw, id=new_id,
+                   reasoning=full_reasoning or None)
 
         # ذاكرة طويلة المدى: يُطلَق بعد إرسال الرد للمستخدم، وبخيط خلفي
         # معزول تماماً. طبقة حماية إضافية هنا (فوق حماية app/memory.py
