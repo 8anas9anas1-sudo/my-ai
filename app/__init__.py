@@ -31,6 +31,40 @@ def create_app():
 
     csrf.init_app(app)
 
+    # ─── رؤوس أمان على كل رد (defense in depth) ─────────────────
+    # CSP هذي مضبوطة على الموارد الخارجية الفعلية المستخدَمة بالمشروع
+    # (Google Fonts، Font Awesome + JSZip من cdnjs، Supabase Storage،
+    # صور pollinations.ai) — لا شيء أوسع مما هو مستخدَم فعلاً.
+    #
+    # ملاحظة مهمة: 'unsafe-inline' مطلوب بـscript-src أيضاً (لا style-src
+    # فقط) — التطبيق يعتمد على onclick="..." خام بعشرات الأماكن (القوالب
+    # + HTML مولَّد ديناميكياً بـapp.js)، وCSP تحجب أي inline event handler
+    # بلا استثناء بدون هذا الاستثناء، بصرف النظر عن محتواه. الأثر: CSP
+    # هنا لا توقف onerror= خاماً لو انحقن يوماً (نفس سيناريو 2.2/2.3) —
+    # الحماية الفعلية من ذاك السيناريو موجودة أصلاً بإصلاحات app.js
+    # (escHtml + حذف حيلة innerHTML). CSP تبقى مفيدة كطبقة إضافية حقيقية:
+    # تمنع تحميل أي <script src> من نطاق غير مُصرَّح، وeval، وتغيير
+    # <base>، والتضمين بإطار خارجي (clickjacking عبر X-Frame-Options).
+    # إزالة unsafe-inline لاحقاً تحتاج ترحيل كل onclick= لـaddEventListener
+    # — تغيير بنيوي أكبر، خارج نطاق هذا الإصلاح السريع.
+    @app.after_request
+    def set_security_headers(resp):
+        resp.headers['X-Content-Type-Options'] = 'nosniff'
+        resp.headers['X-Frame-Options'] = 'DENY'
+        resp.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+        resp.headers['Content-Security-Policy'] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; "
+            "font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com; "
+            "img-src 'self' data: blob: https://image.pollinations.ai https://*.supabase.co; "
+            "connect-src 'self'; "
+            "media-src 'self' blob:; "
+            "frame-src 'self' blob:; "
+            "object-src 'none'; base-uri 'none'"
+        )
+        return resp
+
     from app.db import init_db
     init_db()
 
@@ -43,6 +77,19 @@ def create_app():
         log.warning("ADMIN_EMAILS غير مضبوط — لوحة التحكم (/admin) غير متاحة لأي أحد حالياً "
                     "(هذا هو السلوك الآمن الافتراضي، وليس خطأً)")
 
+    import os
+    if not os.environ.get("PASSWORD_SALT"):
+        log.warning(
+            "PASSWORD_SALT غير مضبوط — أي حساب لا يزال بهاش SHA-256 قديم (قبل "
+            "الترقية التلقائية لـbcrypt عند أول دخول ناجح) محمي حالياً بملح "
+            "افتراضي مكتوب بكود التطبيق نفسه، لا بسرّ حقيقي (انظر شرح كامل "
+            "بـsecurity.py). لتتأكد إن كان هذا يخصّك فعلياً أو لا، شغّل بمحرر "
+            "SQL بلوحة Supabase: "
+            "SELECT COUNT(*) FROM users WHERE password_hash ~ '^[0-9a-f]{64}$' — "
+            "لو النتيجة صفر، لا خطر فعلي حالياً (كل الحسابات مُرقّاة لـbcrypt "
+            "بالفعل) ويمكنك حذف مسار SHA-256 القديم بالكامل من الكود."
+        )
+
     # ─── Blueprints ──────────────────────────────────────────────
     from app.routes.auth import bp as auth_bp
     from app.routes.pages import bp as pages_bp
@@ -53,12 +100,38 @@ def create_app():
     app.register_blueprint(api_bp)
     app.register_blueprint(admin_bp)
 
+    # ─── رد خطأ موحَّد حسب القناة اللي كل مسار /api/ يتوقعها فعلياً ────
+    # /api/chat و/api/speak كلاهما SSE فعلياً، لكن بشكلي حدث مختلفين
+    # تماماً بالواجهة (app.js): الأول يتوقع حدث 'done' بشكل رسالة دردشة
+    # كاملة (response/rawResponse/id)، والثاني يتوقع حدث 'error' بسيط
+    # (error فقط — انظر speakMessage بـapp.js). نسخ منطق /api/chat
+    # حرفياً لـ/api/speak (كما كان مقترحاً أول الأمر) كان سيعطي شكل حدث
+    # غلط ما تفهمه دالة speakMessage إطلاقاً. تُستخدم بثلاث معالجات تحت
+    # (429، CSRFError، الاستثناء العام) بدل تكرار نفس التفريع 3 مرات.
+    def _api_channel_error(path, friendly, json_status):
+        from flask import jsonify, Response
+        from app.routes.api import _sse
+        if path == '/api/chat':
+            def _gen():
+                yield _sse('done', response=friendly, rawResponse="", id=None)
+            return Response(_gen(), mimetype='text/event-stream')
+        if path == '/api/speak':
+            def _gen():
+                yield _sse('error', error=friendly)
+            return Response(_gen(), mimetype='text/event-stream')
+        if path.startswith('/api/'):
+            return jsonify({"error": friendly}), json_status
+        return None  # المسار خارج /api/ — يقرر المستدعي السلوك المناسب
+
     # ─── معالج تجاوز حد المعدل (429) ────────────────────────────
     @app.errorhandler(429)
     def ratelimit_handler(e):
         from flask import jsonify
-        if request.path.startswith('/api/'):
-            return jsonify({"error": "⏱️ أرسلت طلبات كثيرة. انتظر قليلاً ثم حاول مجدداً."}), 429
+        api_resp = _api_channel_error(
+            request.path, "⏱️ أرسلت طلبات كثيرة. انتظر قليلاً ثم حاول مجدداً.", 429
+        )
+        if api_resp is not None:
+            return api_resp
         if request.path.startswith('/admin'):
             return jsonify({"error": "⏱️ طلبات كثيرة جداً على لوحة التحكم. انتظر قليلاً."}), 429
         if request.path.startswith('/reset-password/'):
@@ -86,17 +159,11 @@ def create_app():
 
     @app.errorhandler(CSRFError)
     def csrf_error_handler(e):
-        from flask import jsonify, Response
-        from app.routes.api import _sse
+        from flask import jsonify
         friendly = "⚠️ انتهت صلاحية الجلسة أو الصفحة قديمة. أعد تحميل الصفحة وحاول مجدداً."
-        if request.path == '/api/chat':
-            # هذا المسار الوحيد اللي الواجهة تتوقع منه SSE حصراً؛ الباقي
-            # تحت /api/ (transcribe, speak, chat/<id> DELETE) يقرأ JSON عادي
-            def _csrf_rejected():
-                yield _sse('done', response=friendly, rawResponse="", id=None)
-            return Response(_csrf_rejected(), mimetype='text/event-stream')
-        if request.path.startswith('/api/'):
-            return jsonify({"error": friendly}), 400
+        api_resp = _api_channel_error(request.path, friendly, 400)
+        if api_resp is not None:
+            return api_resp
         if request.path.startswith('/admin'):
             return jsonify({"error": friendly}), 400
         if request.path.startswith('/reset-password/'):
@@ -126,19 +193,13 @@ def create_app():
 
     @app.errorhandler(Exception)
     def unhandled_error_handler(e):
-        from flask import jsonify, Response
         if isinstance(e, HTTPException):
             return e
         log.error(f"خطأ غير متوقع لم يُعالَج ({request.path}): {e}", exc_info=True)
         friendly = "⚠️ صار خطأ غير متوقع من جهتنا. حاول مرة ثانية، ولو تكرر معك خبّرنا."
-        if request.path == '/api/chat':
-            from app.routes.api import _sse
-
-            def _unexpected():
-                yield _sse('done', response=friendly, rawResponse="", id=None)
-            return Response(_unexpected(), mimetype='text/event-stream')
-        if request.path.startswith('/api/'):
-            return jsonify({"error": friendly}), 500
+        api_resp = _api_channel_error(request.path, friendly, 500)
+        if api_resp is not None:
+            return api_resp
         return friendly, 500
 
     log.info("التطبيق جاهز")

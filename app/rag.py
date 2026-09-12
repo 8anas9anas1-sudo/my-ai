@@ -194,14 +194,39 @@ def list_documents():
         return []
 
 
-def delete_document(title):
-    """يحذف كل مقاطع وثيقة بعنوانها بالكامل."""
+def delete_document(title, source_file, user_email):
+    """
+    يحذف كل مقاطع وثيقة واحدة بالضبط — بنفس المفتاح المركّب اللي
+    list_documents() أعلاه يستخدمه فعلاً لتجميع المقاطع كـ"وثيقة واحدة"
+    (title + source_file + user_email معاً، لا العنوان وحده). قبل هذا
+    التعديل، وثيقتان تشاركان نفس العنوان بالصدفة (حتى لو من عضوين
+    مختلفين بالعائلة، أو من ملفين مختلفين تماماً) كانتا تُحذفان معاً
+    بمجرد طلب حذف إحداهما — العنوان وحده لم يكن كافياً للتمييز.
+
+    IS NOT DISTINCT FROM لا = العادي لمقارنة source_file تحديداً، لأنها
+    NULLABLE (وثيقة نصية مباشرة بلا ملف مصدر) وNULL = NULL بـSQL نتيجتها
+    دائماً NULL (غير معروفة)، لا TRUE — كانت ستفشل بصمت بالضبط بالحالة
+    الشائعة (وثيقة بلا ملف مصدر).
+
+    ⚠️ يبقى نظرياً ممكن أن تتطابق وثيقتان بالثلاثة حقول معاً (نفس
+    العنوان حرفياً + نفس الملف المصدر + نفس البريد) — حل كامل 100% لهذا
+    الاحتمال الأضيق يحتاج عمود document_id حقيقي (UUID يُولَّد مرة واحدة
+    بـadd_document ويُخزَّن بكل صف/مقطع تابع له) + migration فعلي على
+    الجدول القائم (ALTER TABLE + تعبئة القيم القديمة) — لم أطبّقه هنا
+    لأنه يحتاج اختباراً على قاعدة بيانات حقيقية لا أملكها بهذي البيئة،
+    وMigration بلا اختبار فعلي خطر أكبر من فائدته لحالة نادرة كهذي.
+    """
     if not db_pool:
         return False
     try:
         with db_pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("DELETE FROM family_documents WHERE title = %s", (title,))
+                cur.execute("""
+                    DELETE FROM family_documents
+                    WHERE title = %s
+                      AND source_file IS NOT DISTINCT FROM %s
+                      AND user_email = %s
+                """, (title, source_file, user_email))
             conn.commit()
         return True
     except Exception as e:

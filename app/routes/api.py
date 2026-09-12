@@ -10,7 +10,7 @@ from app.db import (
     get_user_chats, get_chat_messages, get_chat_history_for_context,
     delete_chat_from_db, save_message, try_consume_daily_usage,
 )
-from app.security import sanitize_input, is_prompt_injection
+from app.security import sanitize_input, is_prompt_injection, is_valid_chat_id, is_valid_image_upload
 from app.ai_service import (
     MODE_PROMPTS, get_system_prompt, generate_image, format_response,
     extract_pdf_text, stream_groq_completion, call_vision_model,
@@ -47,7 +47,7 @@ def api_get_chats():
 def api_get_chat(chat_id):
     user = session.get('user', {})
     email = user.get('email', '')
-    if not email:
+    if not email or not is_valid_chat_id(chat_id):
         return jsonify({"messages": []})
     messages = get_chat_messages(chat_id, email, limit=Config.CHAT_DISPLAY_FETCH_LIMIT)
     for m in messages:
@@ -64,7 +64,7 @@ def api_get_chat(chat_id):
 def api_delete_chat(chat_id):
     user = session.get('user', {})
     email = user.get('email', '')
-    if not email:
+    if not email or not is_valid_chat_id(chat_id):
         return jsonify({"ok": False, "error": "غير مصرح"})
     ok = delete_chat_from_db(chat_id, email)
     return jsonify({"ok": ok})
@@ -89,6 +89,10 @@ def chat():
     user_message = sanitize_input(original_raw_message)
     mode = request.form.get("mode", "fast")
     chat_id = request.form.get("chat_id", "")
+    if chat_id and not is_valid_chat_id(chat_id):
+        # صيغة غير متوقَّعة (chat_id شرعي دائماً رقم صحيح فقط، انظر
+        # app.js) — نتجاهلها بدل تمريرها لمسار تخزين خارجي بـstorage.py
+        chat_id = ""
     regenerate_message_id = request.form.get("regenerate_message_id", type=int)
     file = request.files.get("file")
 
@@ -180,6 +184,9 @@ def chat():
                 if len(file_bytes) > Config.MAX_IMAGE_SIZE:
                     yield _sse('error', error='⚠️ حجم الصورة كبير جداً (الحد الأقصى 10MB)')
                     return
+                if not is_valid_image_upload(file_bytes, file_content_type):
+                    yield _sse('error', error='⚠️ صيغة صورة غير مدعومة أو الملف تالف (المدعوم: PNG, JPEG, WEBP, GIF)')
+                    return
                 img_b64 = base64.b64encode(file_bytes).decode()
                 vision_messages = messages + [{
                     "role": "user",
@@ -204,6 +211,12 @@ def chat():
                                            mode, file_name=file_name, uploaded_image_path=storage_path)
                 yield _sse('done', response=formatted, rawResponse=raw, id=new_id,
                            uploadedImageUrl=display_upload_url)
+                return
+            else:
+                # صيغة غير مدعومة (docx, txt, csv...) — كانت تمرّ هنا بصمت
+                # تام والملف يُتجاهَل كلياً، والرسالة النصية (إن وُجدت)
+                # تُعامَل بمسار 3 كأن لا مرفق أصلاً بلا أي تنبيه للمستخدم.
+                yield _sse('error', error='⚠️ صيغة الملف غير مدعومة حالياً (PDF أو صورة فقط)')
                 return
 
         # ── مسار 3: نص عادي — بث حقيقي حرفاً بحرف ──

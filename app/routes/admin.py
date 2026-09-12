@@ -102,11 +102,13 @@ def memory_add():
 @limiter.limit(Config.ADMIN_RATE_LIMIT)
 def memory_delete():
     title = (request.form.get('title') or '').strip()
+    source_file = (request.form.get('source_file') or '').strip() or None
+    user_email = (request.form.get('user_email') or '').strip()
     if not title:
         flash('لم يُحدَّد عنوان للحذف', 'error')
         return redirect(url_for('admin.dashboard'))
 
-    ok = delete_document(title)
+    ok = delete_document(title, source_file, user_email)
     flash(f'تم حذف "{title}"' if ok else f'تعذر حذف "{title}"',
           'success' if ok else 'error')
     return redirect(url_for('admin.dashboard'))

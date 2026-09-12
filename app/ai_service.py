@@ -7,9 +7,10 @@ import re
 import json
 import hashlib
 import html as html_module
+from datetime import datetime, timezone, timedelta
 
 import requests
-import bleach
+import nh3
 import PyPDF2
 
 from app.config import Config
@@ -128,6 +129,7 @@ MODE_PROMPTS = {
 - هذه الصيغة فقط لملف حقيقي يُفترض يُحفظ ويُشغَّل كما هو. لمقتطف توضيحي قصير غير مخصص للحفظ (شرح فكرة بضع أسطر مثلاً)، استخدم بلوك كود عادي بدون اسم ملف — لا تضع صيغة `lang:path` على مقتطف ليس ملفاً فعلياً.
 - لا تكتب اسم الملف كعنوان Markdown منفصل قبل البلوك (مثل "### app.py" ثم بلوك كود تحته) — هذا لا يُنشئ ملفاً قابلاً للتحميل، فقط الصيغة أعلاه بالضبط تفعّله.
 - لو المشروع فيه أكثر من ملف بنفس الرد، اكتب كل ملف ببلوكه الخاص بنفس الصيغة — الواجهة تجمعهم تلقائياً بزر "تحميل المشروع كـ ZIP" واحد.
+- لو المشروع موقع ويب: سمِّ ملف الصفحة الرئيسية `index.html` تحديداً — الواجهة تعرض له معاينة حية تلقائية (تدمج أي CSS/JS محلي من نفس الرد داخل الصفحة) فور اكتمال الرد، قبل حتى ما يحمّل المستخدم أي ملف.
 
 ## طريقة عملك عند طلب مشروع كامل:
 عندما يطلب المستخدم مشروعاً (موقع، API، بوت، تطبيق)، قدّم:
@@ -227,11 +229,51 @@ def is_identity_question(user_message):
     return False
 
 
+_ARABIC_WEEKDAYS = ['الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت', 'الأحد']
+_ARABIC_MONTHS = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
+                   'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر']
+
+
+def _current_libya_datetime():
+    """
+    ليبيا بتوقيت UTC+2 ثابت طوال السنة (ألغت التوقيت الصيفي نهائياً منذ
+    2013) — إزاحة يدوية ثابتة هنا أضمن من zoneinfo/pytz: بدون أي اعتماد
+    على قاعدة بيانات مناطق زمنية (tzdata) قد تكون ناقصة على صورة Docker
+    مصغّرة بسيرفر النشر، وبدون تبعية جديدة بـrequirements.txt.
+    """
+    return datetime.now(timezone(timedelta(hours=2)))
+
+
+def _current_date_context():
+    """
+    السبب الفعلي وراء "أنا متوقف عند 2024" اللي يقوله الموديل: ما كان
+    فيه أي مكان بكل الكود يُخبره بالتاريخ الحقيقي الآن — فكان يفترض
+    ضمنياً أن آخر شيء يعرفه من التدريب = "الآن". هذا المقطع يُضاف لكل
+    شخصية (عدا رد سؤال الهوية المضبوط حرفياً) ليصحح الافتراض، ويدفعه
+    يستخدم أداة browser_search الحقيقية المتوفرة له فعلياً بدل الاعتذار.
+    """
+    now = _current_libya_datetime()
+    weekday = _ARABIC_WEEKDAYS[now.weekday()]
+    month = _ARABIC_MONTHS[now.month - 1]
+    return (
+        f"\n\n---\n"
+        f"معلومة سياقية إلزامية: التاريخ الحقيقي الآن هو يوم {weekday}، "
+        f"{now.day} {month} {now.year} (توقيت ليبيا). معرفتك المخزَّنة من "
+        f"التدريب متوقفة عند نقطة أقدم من هذا التاريخ بكثير — هذا طبيعي "
+        f"لأي نموذج ذكاء اصطناعي، لكن لا تخلط أبداً بين \"آخر شيء أعرفه من "
+        f"تدريبي\" و\"الآن الحقيقي\". لأي سؤال عن أخبار، أحداث حالية، "
+        f"أسعار، إصدارات جديدة، أو أي شيء قد يكون تغيّر منذ ذلك — استخدم "
+        f"أداة browser_search الفعلية المتوفرة لديك فوراً بدل الاعتذار "
+        f"بعدم امتلاك بيانات حية؛ أنت تملكها فعلاً عبر هذه الأداة، فاستخدمها "
+        f"بدل الافتراض أو الاعتماد على الذاكرة القديمة."
+    )
+
+
 def get_system_prompt(mode, user_message):
     if is_identity_question(user_message):
         return ("أجب بالضبط: أنا Wadi، مساعد ذكاء اصطناعي طوّره المهندس "
                 "Anas Wadi من ليبيا. لا تضف أي معلومة أخرى.")
-    return MODE_PROMPTS.get(mode, MODE_PROMPTS['fast'])
+    return MODE_PROMPTS.get(mode, MODE_PROMPTS['fast']) + _current_date_context()
 
 
 def is_image_generation_request(user_message, has_file=False):
@@ -343,6 +385,20 @@ def format_response(text):
     # بلوك عادي بدون ":" (أي كود قديم أو مقتطف توضيحي) يبقى بسلوكه
     # السابق تماماً — data-filename لا يُضاف إلا لو الصيغة مطابقة فعلاً.
     text = re.sub(r'```(\w+)?(?::([^\n`]+))?\n(.*?)```', replace_code_block, text, flags=re.DOTALL)
+
+    # ماركر الاستشهاد الداخلي لنماذج gpt-oss (صيغة OpenAI Harmony) يظهر
+    # أثناء استخدام browser_search بشكل 【L16-L20†2】 أو مشابه — مخصص
+    # لربط المعلومة بمصدرها داخلياً فقط، لا للعرض المباشر للمستخدم إطلاقاً
+    # (توثيق gpt-oss نفسه يوضح هذي الصيغة كأداة تتبّع داخلية). حذفناه هنا
+    # بدل ما يسرّب كنص معطوب — الرابط الحقيقي للمصدر يحتاج بيانات
+    # executed_tools التي Groq توثّقها فقط بالوضع غير المُبثوث (stream=False)،
+    # فبناء استشهاد قابل للنقر فعلياً يحتاج تحقق تجريبي منفصل قبل تنفيذه،
+    # لا افتراضاً غير مؤكد الآن. 【 】 قوسان صينيان مميزان لا يظهران بأي
+    # استخدام طبيعي عربي/إنجليزي، فحذف أي شيء بينهما آمن تماماً.
+    text = re.sub(r'【[^】]*】', '', text)
+    text = re.sub(r'[ \t]{2,}', ' ', text)
+    text = re.sub(r'[ \t]+([.,،؛:؟!])', r'\1', text)
+
     text = re.sub(r'`([^`\n]+?)`', r'<code>\1</code>', text)
 
     text = re.sub(r'^### (.+)$', r'<h4>\1</h4>', text, flags=re.MULTILINE)
@@ -354,6 +410,42 @@ def format_response(text):
     text = re.sub(r'\*(.+?)\*', r'<em>\1</em>', text)
 
     text = re.sub(r'^---+$', r'<hr>', text, flags=re.MULTILINE)
+
+    def convert_table(m):
+        lines = [l for l in m.group(0).strip('\n').split('\n') if l.strip()]
+        if len(lines) < 2:
+            return m.group(0)
+
+        def split_row(line):
+            line = line.strip()
+            if line.startswith('|'):
+                line = line[1:]
+            if line.endswith('|'):
+                line = line[:-1]
+            return [c.strip() for c in line.split('|')]
+
+        header_cells = split_row(lines[0])
+        parts = ['<table><thead><tr>']
+        parts += [f'<th>{c}</th>' for c in header_cells]
+        parts.append('</tr></thead><tbody>')
+        for line in lines[2:]:  # lines[1] هو سطر الفاصل |---|---| — نتجاوزه
+            parts.append('<tr>')
+            parts += [f'<td>{c}</td>' for c in split_row(line)]
+            parts.append('</tr>')
+        parts.append('</tbody></table>')
+        return ''.join(parts)
+
+    # جدول Markdown (GFM): سطر عناوين | سطر فاصل بشرطات | صفوف بيانات —
+    # كان يسرّب كنص خام (| - | - |) قبل هذا لأن الدالة ما كانت تدعم
+    # الجداول إطلاقاً، رغم أن الموديل يستخدمها بشكل طبيعي جداً (خاصة
+    # بردود المقارنات أو تلخيص بحث ويب). لازم قبل خطوة تقسيم الفقرات
+    # بالأسفل حتى ما ينكسر الجدول لأسطر منفصلة.
+    text = re.sub(
+        r'^[ \t]*\|.+\|[ \t]*\n'
+        r'[ \t]*\|?[ \t]*:?-{1,}:?[ \t]*(\|[ \t]*:?-{1,}:?[ \t]*)+\|?[ \t]*\n'
+        r'(?:[ \t]*\|.+\|[ \t]*\n?)*',
+        convert_table, text, flags=re.MULTILINE
+    )
 
     def convert_list(m):
         items = re.findall(r'^[-*•] (.+)$', m.group(0), re.MULTILINE)
@@ -373,9 +465,20 @@ def format_response(text):
     text = text.replace('<p><ul>', '<ul>').replace('</ul></p>', '</ul>')
     text = text.replace('<p><ol>', '<ol>').replace('</ol></p>', '</ol>')
     text = text.replace('<p><hr>', '<hr>').replace('<hr></p>', '<hr>')
+    text = text.replace('<p><table>', '<table>').replace('</table></p>', '</table>')
 
-    allowed_tags = ['h2', 'h3', 'h4', 'p', 'strong', 'em', 'ul', 'ol', 'li', 'code', 'pre', 'br', 'hr', 'i']
-    return bleach.clean(text, tags=allowed_tags, attributes={'pre': ['data-lang', 'data-filename'], 'code': ['class'], 'i': ['class']}, strip=True)
+    allowed_tags = {'h2', 'h3', 'h4', 'p', 'strong', 'em', 'ul', 'ol', 'li', 'code', 'pre', 'br', 'hr', 'i',
+                     'table', 'thead', 'tbody', 'tr', 'th', 'td'}
+    # nh3 (بديل bleach — انظر تعليق requirements.txt) يحذف أي وسم غير
+    # مسموح به دائماً (لا وضع "تهريب النص كنص مرئي" أصلاً بعكس bleach)،
+    # فمعامل strip=True القديم لا مقابل له هنا لأنه السلوك الوحيد الموجود.
+    # tags/attributes لازم تكون sets لا lists — هذا الفرق الوحيد الفعلي
+    # بالتوقيع مقابل bleach.clean بنفس الاستخدام هنا بالضبط.
+    return nh3.clean(
+        text,
+        tags=allowed_tags,
+        attributes={'pre': {'data-lang', 'data-filename'}, 'code': {'class'}, 'i': {'class'}},
+    )
 
 
 # ─── استخراج نص PDF ─────────────────────────────────────────────

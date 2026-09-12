@@ -201,6 +201,8 @@
                 onsubmit="return confirm('حذف هذه الوثيقة نهائياً؟');">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <input type="hidden" name="title" value="{{ d.title }}">
+            <input type="hidden" name="source_file" value="{{ d.source_file or '' }}">
+            <input type="hidden" name="user_email" value="{{ d.user_email }}">
             <button type="submit"><i class="fa-solid fa-trash"></i> حذف</button>
           </form>
         </div>

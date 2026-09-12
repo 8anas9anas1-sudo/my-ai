@@ -356,19 +356,27 @@ function renderChat() {
       pre.insertBefore(header, pre.firstChild);
     });
 
-    // شريط "تحميل المشروع كـ ZIP" — يظهر فوق أول ملف لو نفس الرد فيه
-    // ملفين أو أكثر (مشروع كامل)، لا ملف واحد بذاته.
+    // معاينة حية + شريط "تحميل المشروع كـ ZIP" — نفس الرد، بترتيب واحد:
+    // المعاينة أولاً (لو فيه ملف HTML)، ثم زر الـZIP (لو ملفين فأكثر)،
+    // فوق أول بلوك ملف مباشرة.
     document.querySelectorAll('.ai-msg').forEach(msg => {
-      if (msg.querySelector('.project-zip-bar')) return;
       const fileBlocks = msg.querySelectorAll('pre.file-block');
-      if (fileBlocks.length < 2) return;
-      const bar = document.createElement('div');
-      bar.className = 'project-zip-bar';
-      bar.innerHTML = `<span><i class="fa-solid fa-box-archive"></i> ${fileBlocks.length} ملفات جاهزة</span>
-        <button class="download-zip-btn" onclick="downloadProjectZip(this)">
-          <i class="fa-solid fa-file-zipper"></i> تحميل المشروع كـ ZIP
-        </button>`;
-      msg.insertBefore(bar, fileBlocks[0]);
+      if (!fileBlocks.length) return;
+
+      if (!msg.querySelector('.live-preview-card')) {
+        const previewHtml = buildPreviewDoc(fileBlocks);
+        if (previewHtml) msg.insertBefore(buildLivePreviewCard(previewHtml), fileBlocks[0]);
+      }
+
+      if (fileBlocks.length >= 2 && !msg.querySelector('.project-zip-bar')) {
+        const bar = document.createElement('div');
+        bar.className = 'project-zip-bar';
+        bar.innerHTML = `<span><i class="fa-solid fa-box-archive"></i> ${fileBlocks.length} ملفات جاهزة</span>
+          <button class="download-zip-btn" onclick="downloadProjectZip(this)">
+            <i class="fa-solid fa-file-zipper"></i> تحميل المشروع كـ ZIP
+          </button>`;
+        msg.insertBefore(bar, fileBlocks[0]);
+      }
     });
 
     window.scrollTo(0, document.body.scrollHeight);
@@ -425,6 +433,106 @@ function copyCodeBlock(btn) {
       btn.innerHTML = '<i class="fa-regular fa-copy"></i> نسخ';
     }, 2000);
   }).catch(() => showToast('تعذر النسخ', 'error'));
+}
+
+// يبني مستند HTML قابل للمعاينة من ملفات نفس الرد: يختار ملف HTML
+// الرئيسي (يفضّل index.html)، ويدمج داخله أي CSS/JS محلي من نفس
+// الرد بدل روابط <link>/<script src> الخارجية (لأن iframe عبر
+// srcdoc ما يقدر يجلب ملفات فرعية منفصلة). روابط CDN/http الخارجية
+// تُترك كما هي وتُحمَّل فعلياً من الشبكة كالعادة.
+function buildPreviewDoc(fileBlockEls) {
+  const files = {};
+  fileBlockEls.forEach(pre => {
+    const path = pre.dataset.filename || '';
+    const code = pre.querySelector('code');
+    if (path) files[path] = code ? code.innerText : '';
+  });
+  const htmlPaths = Object.keys(files).filter(p => /\.html?$/i.test(p));
+  if (!htmlPaths.length) return null;
+  const primaryPath = htmlPaths.find(p => /(^|\/)index\.html?$/i.test(p)) || htmlPaths[0];
+  let html = files[primaryPath];
+
+  function resolveLocal(ref) {
+    if (!ref) return null;
+    ref = ref.trim();
+    if (/^([a-z][a-z0-9+.-]*:)?\/\//i.test(ref) || ref.startsWith('#') || ref.startsWith('data:')) return null;
+    const cleaned = ref.split('?')[0].split('#')[0].replace(/^\.\//, '').replace(/^\//, '');
+    if (files[cleaned] !== undefined) return files[cleaned];
+    const base = cleaned.split('/').pop();
+    const match = Object.keys(files).find(p => p.split('/').pop() === base);
+    return match ? files[match] : null;
+  }
+
+  html = html.replace(/<link\b[^>]*>/gi, tag => {
+    if (!/rel=["']stylesheet["']/i.test(tag)) return tag;
+    const hrefMatch = tag.match(/href=["']([^"']+)["']/i);
+    const css = hrefMatch ? resolveLocal(hrefMatch[1]) : null;
+    return css !== null ? `<style>\n${css}\n</style>` : tag;
+  });
+  html = html.replace(/<script\b[^>]*\bsrc=["']([^"']+)["'][^>]*><\/script>/gi, (tag, src) => {
+    const js = resolveLocal(src);
+    return js !== null ? `<script>\n${js}\n</script>` : tag;
+  });
+
+  return html;
+}
+
+// بطاقة المعاينة المضمّنة بالرسالة — iframe داخل sandbox بدون
+// allow-same-origin، أي الكود المولَّد يعمل داخل origin معزول تماماً:
+// ما يقدر يقرأ كوكيز/جلسة/localStorage تبع الموقع الحقيقي، ولا يكدر
+// ينادي أي endpoint بحساب المستخدم — بالضبط زي CodePen/JSFiddle.
+function buildLivePreviewCard(previewHtml) {
+  const wrap = document.createElement('div');
+  wrap.className = 'live-preview-card';
+  const toolbar = document.createElement('div');
+  toolbar.className = 'live-preview-toolbar';
+  toolbar.innerHTML = `<span class="live-preview-label"><i class="fa-solid fa-eye"></i> معاينة حية</span>
+    <button class="live-preview-icon-btn" onclick="openFullscreenPreview(this)" title="ملء الشاشة">
+      <i class="fa-solid fa-expand"></i>
+    </button>`;
+  const iframe = document.createElement('iframe');
+  iframe.className = 'live-preview-frame';
+  iframe.setAttribute('sandbox', 'allow-scripts allow-modals allow-forms');
+  iframe.setAttribute('referrerpolicy', 'no-referrer');
+  iframe.setAttribute('loading', 'lazy');
+  iframe.srcdoc = previewHtml;
+  wrap.appendChild(toolbar);
+  wrap.appendChild(iframe);
+  return wrap;
+}
+
+function openFullscreenPreview(btn) {
+  const card = btn.closest('.live-preview-card');
+  const srcFrame = card.querySelector('.live-preview-frame');
+  document.getElementById('previewFullscreenFrame').srcdoc = srcFrame.srcdoc;
+  document.getElementById('previewOverlay').classList.remove('hidden');
+}
+
+function closeFullscreenPreview() {
+  document.getElementById('previewOverlay').classList.add('hidden');
+  // نفرّغ srcdoc عشان نوقف أي سكربتات/صوت شغّالة بالمعاينة فور الإغلاق.
+  document.getElementById('previewFullscreenFrame').srcdoc = '';
+}
+
+// يفتح نفس المعاينة بتبويب متصفح حقيقي منفصل — مفيد لو المستخدم يحب
+// يشوفها بمساحة كاملة أو يشاركها بصفحة مستقلة.
+//
+// مهم: التبويب نفسه لازم يبقى بمحتوى من صياغتنا نحن (آمن)، والكود
+// المولَّد فعلياً (من الذكاء الاصطناعي) يبقى بداخل iframe معزول
+// بنفس sandbox المستخدم بالمعاينة المضمّنة. فتح الـblob مباشرة كان
+// يفقد العزل بالكامل لأن blob: يرث نفس origin الصفحة اللي أنشأته.
+function openPreviewInNewTab() {
+  const html = document.getElementById('previewFullscreenFrame').srcdoc;
+  if (!html) return;
+  const escapedForAttr = html.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+  const wrapper = `<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>html,body{margin:0;height:100%}iframe{border:0;width:100%;height:100%}</style>
+</head><body><iframe sandbox="allow-scripts allow-modals allow-forms"
+referrerpolicy="no-referrer" srcdoc="${escapedForAttr}"></iframe></body></html>`;
+  const blob = new Blob([wrapper], { type: 'text/html' });
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank');
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 function humanFileSize(bytes) {
@@ -597,6 +705,7 @@ async function sendMessage() {
       onChunk: (rawAccum) => { c[msgIndex].ai = rawAccum; updateStreamingContent(msgIndex, rawAccum); },
       onDone: (evt) => {
         c[msgIndex].ai = evt.response;
+        c[msgIndex].sanitized = true; // جاء من format_response المُعقَّم بالخادم
         c[msgIndex].rawAi = evt.rawResponse || evt.response;
         c[msgIndex].reasoning = evt.reasoning || '';
         c[msgIndex].id = evt.id;
@@ -622,17 +731,29 @@ async function sendMessage() {
       },
       onError: (msg) => {
         showToast(msg, 'error');
-        c[msgIndex].ai = 'حدث خطأ: ' + msg;
+        c[msgIndex].ai = escHtml('حدث خطأ: ' + msg);
+        c[msgIndex].sanitized = true;
         renderChat();
         if (triggeredByVoice && VoiceMode.state !== 'idle') startVoiceListening();
       }
     });
   } catch (err) {
-    c[msgIndex].ai = 'حدث خطأ: ' + err.message;
+    c[msgIndex].ai = escHtml('حدث خطأ: ' + err.message);
+    c[msgIndex].sanitized = true;
     renderChat();
     showToast('تعذر الإرسال', 'error');
     if (triggeredByVoice && VoiceMode.state !== 'idle') startVoiceListening();
   } finally {
+    // لو ما وصلنا هنا لا بـonDone ولا بـonError/catch (مثال: انقطاع
+    // شبكة فعلي منتصف البث، أو تبديل تطبيق على موبايل يُعلّق الطلب)،
+    // m.ai يبقى نصاً خاماً متراكماً من onChunk — لم يمرّ إطلاقاً بـ
+    // bleach. لازم يُعقَّم هنا قبل ما يُحفَظ بـlocalStorage ويُعرَض
+    // لاحقاً عبر renderChat كـHTML خام.
+    if (c[msgIndex] && c[msgIndex].ai && c[msgIndex].ai !== '__typing__' && !c[msgIndex].sanitized) {
+      c[msgIndex].ai = escHtml(c[msgIndex].ai) + '<br><em style="opacity:.6">(انقطع الاتصال قبل اكتمال الرد)</em>';
+      c[msgIndex].sanitized = true;
+      renderChat();
+    }
     if (localPreviewUrl) URL.revokeObjectURL(localPreviewUrl);
     currentFile = null;
     document.getElementById('filePreview').classList.add('hidden');
@@ -665,18 +786,27 @@ async function regenerate(i) {
       onFirstChunk: () => { c[i].ai = ''; },
       onChunk: (rawAccum) => { c[i].ai = rawAccum; updateStreamingContent(i, rawAccum); },
       onDone: (evt) => {
-        c[i].ai = evt.response; c[i].rawAi = evt.rawResponse || evt.response;
+        c[i].ai = evt.response; c[i].sanitized = true;
+        c[i].rawAi = evt.rawResponse || evt.response;
         c[i].reasoning = evt.reasoning || '';
         c[i].id = evt.id;
         if (evt.imageUrl) c[i].imageUrl = evt.imageUrl; else delete c[i].imageUrl;
         saveChats(); renderChat();
       },
-      onError: (msg) => { c[i].ai = 'حدث خطأ: ' + msg; renderChat(); }
+      onError: (msg) => { c[i].ai = escHtml('حدث خطأ: ' + msg); c[i].sanitized = true; renderChat(); }
     });
   } catch (err) {
-    c[i].ai = 'حدث خطأ: ' + err.message;
+    c[i].ai = escHtml('حدث خطأ: ' + err.message);
+    c[i].sanitized = true;
     renderChat();
   } finally {
+    // نفس حماية sendMessage: بث انقطع بلا onDone/onError يترك نصاً
+    // خاماً غير مُعقَّم بـm.ai — يُعقَّم هنا قبل الحفظ والعرض.
+    if (c[i] && c[i].ai && c[i].ai !== '__typing__' && !c[i].sanitized) {
+      c[i].ai = escHtml(c[i].ai) + '<br><em style="opacity:.6">(انقطع الاتصال قبل اكتمال الرد)</em>';
+      c[i].sanitized = true;
+      renderChat();
+    }
     saveChats(); isSending = false;
   }
 }
@@ -703,9 +833,10 @@ function useTemplate(t) {
 function copyText(i) {
   const c = chats[currentChatId] || [];
   const raw = (c[i] && (c[i].rawAi || c[i].ai)) || '';
-  const tmp = document.createElement('div');
-  tmp.innerHTML = raw;
-  navigator.clipboard.writeText(tmp.textContent || raw)
+  // بدون أي التفاف عبر innerHTML — rawAi نص شبه-عادي أصلاً، وتحليله
+  // كـHTML لمجرد استخراج نص كان يُنفّذ onerror/onload حتى بعنصر غير
+  // مرتبط بشجرة الصفحة (فخ أمني موثَّق لهذا النمط تحديداً).
+  navigator.clipboard.writeText(raw)
     .then(() => showToast('تم النسخ', 'success'))
     .catch(() => showToast('تعذر النسخ', 'error'));
 }

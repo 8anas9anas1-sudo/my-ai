@@ -1,16 +1,20 @@
 Flask==3.0.3
-Flask-Session==0.5.0
 Flask-WTF==1.2.1
 gunicorn==23.0.0
 psycopg[binary,pool]==3.2.10
 PyPDF2==3.0.1
-bleach==6.1.0
+# bleach توقفت صيانته نهائياً (يونيو 2026) — لا إصدارات مستقبلية حتى
+# للثغرات الأمنية. nh3 هو البديل الرسمي الموصى به من نفس المجتمع (Rust
+# عبر ammonia، ~20 ضعف أسرع). API مشابه جداً — انظر التعليق عند
+# الاستخدام الوحيد بـ ai_service.py: format_response(). لم يُختبر تثبيته
+# فعلياً هنا (لا اتصال إنترنت بالبيئة اللي كتبت فيها هذا التعديل) — جرّب
+# محلياً بـ`pip install nh3==0.3.5` وقارن ناتج format_response() على رد
+# حقيقي فيه كود/جدول/قوائم قبل النشر.
+nh3==0.3.5
 requests==2.32.3
 bcrypt==4.1.3
 redis==5.0.8
 Flask-Limiter==3.8.0
-celery==5.4.0
-mistune==3.0.2
 Werkzeug==3.0.3
 
 # الذاكرة العائلية الدائمة (RAG) — انظر app/rag.py. sentence-transformers
@@ -21,10 +25,9 @@ Werkzeug==3.0.3
 sentence-transformers==3.0.1
 pgvector==0.3.6
 
-html5lib==1.1
-webencodings==0.5.1
 cffi==1.16.0
 limits==4.1
-vine==5.1.0
-click==8.1.7
+# python-dotenv مفعَّل فعلياً الآن (load_dotenv() بـwsgi.py) — كان مثبَّتاً
+# سابقاً بلا أي استدعاء فعلي، فتعليمة README (cp .env.example .env) ما
+# كانت تشتغل كما هي مكتوبة عند تشغيل python wsgi.py مباشرة.
 python-dotenv==1.0.0

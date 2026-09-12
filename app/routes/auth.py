@@ -15,6 +15,12 @@ bp = Blueprint('auth', __name__)
     exempt_when=lambda: request.method != 'POST',
     deduct_when=lambda response: getattr(g, 'login_failed', False),
 )
+@limiter.limit(
+    f"{Config.ACCOUNT_LOCKOUT_ATTEMPTS} per {Config.LOGIN_WINDOW_SECONDS} seconds",
+    key_func=lambda: f"account-lockout:{(request.form.get('email') or '').strip().lower()}",
+    exempt_when=lambda: request.method != 'POST' or not (request.form.get('email') or '').strip(),
+    deduct_when=lambda response: getattr(g, 'login_failed', False),
+)
 def login():
     if request.method == 'POST':
         g.login_failed = True  # القيمة الافتراضية؛ تُلغى فقط عند نجاح الدخول
