@@ -16,7 +16,7 @@ from app.ai_service import (
     extract_pdf_text, stream_groq_completion, call_vision_model,
     is_image_generation_request, extract_image_prompt, translate_image_prompt,
     transcribe_audio, synthesize_speech, strip_markdown_for_speech, split_text_for_tts,
-    supports_builtin_tools,
+    supports_builtin_tools, fit_within_tpm_budget,
 )
 from app.storage import upload_image, get_signed_url, persist_generated_image
 from app.memory import maybe_summarize_async
@@ -267,6 +267,11 @@ def chat():
         fallback_model = Config.GROQ_FALLBACK_MODEL.get(model)
 
         final_messages = messages + [{"role": "user", "content": local_user_message or "مرحبا"}]
+        # حماية استباقية من حد Groq للتوكنات بالدقيقة (TPM) — تُقلّص
+        # max_tokens و/أو تحذف أقدم رسائل سياق تلقائياً لو المجموع
+        # المقدَّر قريب من التجاوز، بدل ما نكتشف التجاوز بعد وصول خطأ
+        # 413 من Groq (انظر شرح fit_within_tpm_budget بـai_service.py).
+        final_messages, max_tokens = fit_within_tpm_budget(final_messages, max_tokens)
 
         full_raw = ""
         full_reasoning = ""

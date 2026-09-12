@@ -522,6 +522,69 @@ def supports_builtin_tools(model):
     return bool(model) and model.startswith('openai/gpt-oss')
 
 
+# ─── حماية من تجاوز حد Groq للتوكنات بالدقيقة (TPM) ──────────────
+# Groq على خطة on_demand (المجانية) يحسب "الطلب" = تقدير توكنات
+# الإدخال (system + سياق المحادثة + رسالة المستخدم) + max_tokens
+# المطلوب — وليس فقط ما يُنتَج فعلياً. أي طلب واحد يتجاوز هذا المجموع
+# (8000 حالياً لنماذج gpt-oss) يُرفَض فوراً بخطأ 413 قبل ما الموديل
+# يبدأ حتى، بغض النظر عن حجم الرد الفعلي — وهذا كان يحصل بصمت (الخطأ
+# الخام من Groq يصل للمستخدم كما هو، انظر stream_groq_completion تحت).
+# التقليص هنا استباقي: نضمن قبل الإرسال أن المجموع يبقى تحت الحد،
+# بدل الاعتماد على أن يفشل الطلب أولاً ثم نتعامل مع الفشل.
+def estimate_tokens(text):
+    """
+    تقدير تقريبي (لا حساب حقيقي بـtokenizer فعلي — غير متاح لنماذج
+    gpt-oss هنا، وربط مكتبة عامة زي tiktoken غير دقيق أصلاً لموديل
+    مختلف عن نماذج OpenAI الحقيقية) لعدد التوكنات من طول النص بالحروف.
+    القسمة على 3 عمداً محافظة (تميل للمبالغة) — المبالغة بالتقدير آمنة
+    هنا (تخفّض max_tokens المُرسَل أكثر من اللازم بقليل)، عكس التقدير
+    الأقل من الحقيقي (يترك الطلب يتجاوز حد Groq فعلياً رغم كل الاحتياط).
+    """
+    if not text:
+        return 0
+    return max(1, len(str(text)) // 3)
+
+
+def estimate_messages_tokens(messages):
+    """مجموع تقدير توكنات كل الرسائل. أجزاء الصور بمحتوى متعدد الأجزاء
+    (رسائل تحليل صور) تُتجاهَل عمداً — حجمها لا يُحسَب بطول نص أصلاً،
+    ومسار الرؤية (call_vision_model) لا يمر بهذي الدالة أصلاً."""
+    total = 0
+    for m in messages:
+        content = m.get('content', '')
+        if isinstance(content, str):
+            total += estimate_tokens(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get('type') == 'text':
+                    total += estimate_tokens(part.get('text', ''))
+    return total
+
+
+def fit_within_tpm_budget(messages, requested_max_tokens):
+    """
+    يضمن أن (تقدير توكنات messages) + max_tokens الفعّال لا يتجاوز
+    Config.GROQ_TPM_LIMIT — بتقليص max_tokens أولاً، وإن ما كفى، بحذف
+    أقدم رسائل سياق المحادثة واحدة تلو الأخرى (نُبقي دائماً أول رسالة
+    [system] وآخر رسالة [رسالة المستخدم الحالية] مهما حصل — لا نحذفهما
+    أبداً) حتى يصير الطلب قابلاً للإرسال فعلياً، بدل ما يوصل Groq
+    مرفوضاً بخطأ 413 من الأساس. يرجع (messages بعد أي تقليص محتمل،
+    max_tokens الفعّال).
+    """
+    budget = Config.GROQ_TPM_LIMIT - Config.GROQ_TPM_SAFETY_MARGIN
+    trimmed = list(messages)
+    while True:
+        prompt_tokens = estimate_messages_tokens(trimmed)
+        available = budget - prompt_tokens
+        if available >= Config.GROQ_MIN_OUTPUT_TOKENS or len(trimmed) <= 2:
+            break
+        del trimmed[1]  # أقدم رسالة سياق (مباشرة بعد system)
+
+    prompt_tokens = estimate_messages_tokens(trimmed)
+    effective_max = max(Config.GROQ_MIN_OUTPUT_TOKENS, min(requested_max_tokens, budget - prompt_tokens))
+    return trimmed, effective_max
+
+
 # ─── البث الحي (Streaming) ──────────────────────────────────────
 def stream_groq_completion(model, messages, temperature, max_tokens, extra_params, fallback_model=None):
     """
@@ -556,7 +619,13 @@ def stream_groq_completion(model, messages, temperature, max_tokens, extra_param
 
     try:
         resp = _stream(model)
-        if resp.status_code == 429 and fallback_model:
+        # 413 هنا تحديداً هو خطأ Groq "Request too large ... tokens per
+        # minute" — نفس نوع تجاوز حد Groq اللي 429 يمثّله لكن برسالة/كود
+        # HTTP مختلفين (راجع توثيق Groq: 413 لما الطلب الواحد نفسه أكبر
+        # من الحد، 429 لما تراكم الاستخدام خلال الدقيقة تجاوزه). كان
+        # مُستبعَداً هنا سابقاً فيصل خامّاً للمستخدم مباشرة بدل أي محاولة
+        # تعافي — أضفناه لنفس مسار fallback الموجود أصلاً لـ429.
+        if resp.status_code in (429, 413) and fallback_model:
             resp.close()
             resp = _stream(fallback_model)
 
@@ -565,7 +634,17 @@ def stream_groq_completion(model, messages, temperature, max_tokens, extra_param
                 err = resp.json()
             except Exception:
                 err = {}
-            yield ('error', err.get('error', {}).get('message', 'خطأ غير معروف'))
+            err_obj = err.get('error', {}) or {}
+            raw_msg = err_obj.get('message', 'خطأ غير معروف')
+            log.error(f"خطأ Groq (HTTP {resp.status_code}): {raw_msg}")
+            # رسالة Groq الخام تقنية وبالإنجليزية بالكامل (حدود TPM،
+            # اسم organization...) — لا تصلح للعرض المباشر بواجهة عربية
+            # موجَّهة لمستخدم عادي. نستبدلها برسالة عربية مفهومة لهذا
+            # النوع تحديداً، ونُبقي التفاصيل الحقيقية باللوق فقط لمن يطوّر.
+            if err_obj.get('code') == 'rate_limit_exceeded' or resp.status_code in (413, 429):
+                yield ('error', '⚠️ المحادثة أو الرسالة طويلة جداً حالياً. جرّب تبدأ محادثة جديدة أو اختصر رسالتك وحاول مجدداً.')
+            else:
+                yield ('error', raw_msg)
             return
 
         full_text = ""
