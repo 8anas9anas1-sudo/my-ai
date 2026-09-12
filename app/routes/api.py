@@ -30,6 +30,13 @@ def _sse(event_type, **kwargs):
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+@bp.route('/debug-ip')
+def debug_ip():
+    # مؤقت — بند #8 بتقرير التدقيق: يُحذف فور الحصول على النتيجة،
+    # هو وسطره المقابل بـ allowed_routes بـ app/__init__.py.
+    return request.headers.get('X-Forwarded-For', 'none')
+
+
 @bp.route("/chats")
 def api_get_chats():
     user = session.get('user', {})
