@@ -41,6 +41,9 @@ function generateStars() {
 
 // ─── Toast ────────────────────────────────────────────────────
 const TOAST_ICONS = { success: 'fa-circle-check', error: 'fa-triangle-exclamation', '': 'fa-circle-info' };
+// Groq استُنفد مؤقتاً لهذه الرسالة والرد جاء من موديل احتياطي (Llama عبر
+// SambaNova) — تنبيه هادئ فقط، الرد نفسه وصل بنجاح فلا داعي لأي قلق.
+const FALLBACK_PROVIDER_MSG = 'تم الرد بموديل احتياطي مجاني (Llama) بسبب ضغط مؤقت على الخدمة الأساسية';
 
 function showToast(msg, type = '') {
   const t = document.getElementById('toast');
@@ -613,7 +616,7 @@ function escHtml(t) {
 // ─── Streaming (SSE عبر fetch) ─────────────────────────────────
 // نتعامل مع البث عبر fetch + ReadableStream بدل EventSource، لأن
 // EventSource يدعم GET فقط ولا يسمح بإرسال FormData/ملفات.
-async function streamChat(fd, { onFirstChunk, onChunk, onReasoning, onToolStart, onDone, onError } = {}) {
+async function streamChat(fd, { onFirstChunk, onChunk, onReasoning, onToolStart, onFallbackProvider, onDone, onError } = {}) {
   let r;
   try {
     r = await fetch('/api/chat', { method: 'POST', headers: { 'X-CSRFToken': CSRF_TOKEN }, body: fd });
@@ -651,6 +654,8 @@ async function streamChat(fd, { onFirstChunk, onChunk, onReasoning, onToolStart,
         onReasoning && onReasoning(evt.content);
       } else if (evt.type === 'tool_start') {
         onToolStart && onToolStart(evt.tool);
+      } else if (evt.type === 'fallback_provider') {
+        onFallbackProvider && onFallbackProvider(evt.provider);
       } else if (evt.type === 'error') {
         onError && onError(evt.error || 'حدث خطأ');
       } else if (evt.type === 'done') {
@@ -701,6 +706,7 @@ async function sendMessage() {
       onToolStart: (tool) => {
         if (c[msgIndex].ai === '__typing__') updateStatusIndicator(msgIndex, TOOL_STATUS_LABELS[tool] || 'يعمل...');
       },
+      onFallbackProvider: () => showToast(FALLBACK_PROVIDER_MSG, ''),
       onFirstChunk: () => { c[msgIndex].ai = ''; },
       onChunk: (rawAccum) => { c[msgIndex].ai = rawAccum; updateStreamingContent(msgIndex, rawAccum); },
       onDone: (evt) => {
@@ -783,6 +789,7 @@ async function regenerate(i) {
       onToolStart: (tool) => {
         if (c[i].ai === '__typing__') updateStatusIndicator(i, TOOL_STATUS_LABELS[tool] || 'يعمل...');
       },
+      onFallbackProvider: () => showToast(FALLBACK_PROVIDER_MSG, ''),
       onFirstChunk: () => { c[i].ai = ''; },
       onChunk: (rawAccum) => { c[i].ai = rawAccum; updateStreamingContent(i, rawAccum); },
       onDone: (evt) => {

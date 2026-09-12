@@ -13,10 +13,10 @@ from app.db import (
 from app.security import sanitize_input, is_valid_chat_id, is_valid_image_upload
 from app.ai_service import (
     MODE_PROMPTS, get_system_prompt, generate_image, format_response,
-    extract_pdf_text, stream_groq_completion, call_vision_model,
+    extract_pdf_text, stream_chat_completion, call_vision_model,
     is_image_generation_request, extract_image_prompt, translate_image_prompt,
     transcribe_audio, synthesize_speech, strip_markdown_for_speech, split_text_for_tts,
-    supports_builtin_tools, fit_within_tpm_budget,
+    supports_builtin_tools,
 )
 from app.storage import upload_image, get_signed_url, persist_generated_image
 from app.memory import maybe_summarize_async
@@ -267,16 +267,11 @@ def chat():
         fallback_model = Config.GROQ_FALLBACK_MODEL.get(model)
 
         final_messages = messages + [{"role": "user", "content": local_user_message or "مرحبا"}]
-        # حماية استباقية من حد Groq للتوكنات بالدقيقة (TPM) — تُقلّص
-        # max_tokens و/أو تحذف أقدم رسائل سياق تلقائياً لو المجموع
-        # المقدَّر قريب من التجاوز، بدل ما نكتشف التجاوز بعد وصول خطأ
-        # 413 من Groq (انظر شرح fit_within_tpm_budget بـai_service.py).
-        final_messages, max_tokens = fit_within_tpm_budget(final_messages, max_tokens)
 
         full_raw = ""
         full_reasoning = ""
         had_error = False
-        for kind, data in stream_groq_completion(model, final_messages, temperature, max_tokens,
+        for kind, data in stream_chat_completion(model, final_messages, temperature, max_tokens,
                                                    extra_params, fallback_model):
             if kind == 'chunk':
                 full_raw += data
@@ -286,6 +281,11 @@ def chat():
                 yield _sse('reasoning', content=data)
             elif kind == 'tool_start':
                 yield _sse('tool_start', tool=data)
+            elif kind == 'fallback_provider':
+                # Groq استُنفد بالكامل لهذه الرسالة — الرد قادم فعلياً من
+                # موديل احتياطي مختلف (Llama عبر SambaNova). نمرر الحدث
+                # للواجهة فقط لإظهار تنبيه هادئ؛ لا يؤثر على تدفق الرد نفسه.
+                yield _sse('fallback_provider', provider=data)
             elif kind == 'error':
                 had_error = True
                 yield _sse('error', error=data)

@@ -522,133 +522,48 @@ def supports_builtin_tools(model):
     return bool(model) and model.startswith('openai/gpt-oss')
 
 
-# ─── حماية من تجاوز حد Groq للتوكنات بالدقيقة (TPM) ──────────────
-# Groq على خطة on_demand (المجانية) يحسب "الطلب" = تقدير توكنات
-# الإدخال (system + سياق المحادثة + رسالة المستخدم) + max_tokens
-# المطلوب — وليس فقط ما يُنتَج فعلياً. أي طلب واحد يتجاوز هذا المجموع
-# (8000 حالياً لنماذج gpt-oss) يُرفَض فوراً بخطأ 413 قبل ما الموديل
-# يبدأ حتى، بغض النظر عن حجم الرد الفعلي — وهذا كان يحصل بصمت (الخطأ
-# الخام من Groq يصل للمستخدم كما هو، انظر stream_groq_completion تحت).
-# التقليص هنا استباقي: نضمن قبل الإرسال أن المجموع يبقى تحت الحد،
-# بدل الاعتماد على أن يفشل الطلب أولاً ثم نتعامل مع الفشل.
-def estimate_tokens(text):
-    """
-    تقدير تقريبي (لا حساب حقيقي بـtokenizer فعلي — غير متاح لنماذج
-    gpt-oss هنا، وربط مكتبة عامة زي tiktoken غير دقيق أصلاً لموديل
-    مختلف عن نماذج OpenAI الحقيقية) لعدد التوكنات من طول النص بالحروف.
-    القسمة على 3 عمداً محافظة (تميل للمبالغة) — المبالغة بالتقدير آمنة
-    هنا (تخفّض max_tokens المُرسَل أكثر من اللازم بقليل)، عكس التقدير
-    الأقل من الحقيقي (يترك الطلب يتجاوز حد Groq فعلياً رغم كل الاحتياط).
-    """
-    if not text:
-        return 0
-    return max(1, len(str(text)) // 3)
-
-
-def estimate_messages_tokens(messages):
-    """مجموع تقدير توكنات كل الرسائل. أجزاء الصور بمحتوى متعدد الأجزاء
-    (رسائل تحليل صور) تُتجاهَل عمداً — حجمها لا يُحسَب بطول نص أصلاً،
-    ومسار الرؤية (call_vision_model) لا يمر بهذي الدالة أصلاً."""
-    total = 0
-    for m in messages:
-        content = m.get('content', '')
-        if isinstance(content, str):
-            total += estimate_tokens(content)
-        elif isinstance(content, list):
-            for part in content:
-                if isinstance(part, dict) and part.get('type') == 'text':
-                    total += estimate_tokens(part.get('text', ''))
-    return total
-
-
-def fit_within_tpm_budget(messages, requested_max_tokens):
-    """
-    يضمن أن (تقدير توكنات messages) + max_tokens الفعّال لا يتجاوز
-    Config.GROQ_TPM_LIMIT — بتقليص max_tokens أولاً، وإن ما كفى، بحذف
-    أقدم رسائل سياق المحادثة واحدة تلو الأخرى (نُبقي دائماً أول رسالة
-    [system] وآخر رسالة [رسالة المستخدم الحالية] مهما حصل — لا نحذفهما
-    أبداً) حتى يصير الطلب قابلاً للإرسال فعلياً، بدل ما يوصل Groq
-    مرفوضاً بخطأ 413 من الأساس. يرجع (messages بعد أي تقليص محتمل،
-    max_tokens الفعّال).
-    """
-    budget = Config.GROQ_TPM_LIMIT - Config.GROQ_TPM_SAFETY_MARGIN
-    trimmed = list(messages)
-    while True:
-        prompt_tokens = estimate_messages_tokens(trimmed)
-        available = budget - prompt_tokens
-        if available >= Config.GROQ_MIN_OUTPUT_TOKENS or len(trimmed) <= 2:
-            break
-        del trimmed[1]  # أقدم رسالة سياق (مباشرة بعد system)
-
-    prompt_tokens = estimate_messages_tokens(trimmed)
-    effective_max = max(Config.GROQ_MIN_OUTPUT_TOKENS, min(requested_max_tokens, budget - prompt_tokens))
-    return trimmed, effective_max
-
-
 # ─── البث الحي (Streaming) ──────────────────────────────────────
-def stream_groq_completion(model, messages, temperature, max_tokens, extra_params, fallback_model=None):
+def _stream_sambanova_fallback(messages, temperature, max_tokens):
     """
-    مولّد Python يبث القطع (chunks) القادمة من Groq أولاً بأول (Server-Sent
-    Events)، بدل انتظار الرد كاملاً. يrield tuples بصيغة (نوع, بيانات):
-      ('chunk', 'نص جزئي')      — جزء جديد من الرد النهائي (نص الإجابة نفسه)
-      ('reasoning', 'نص جزئي')  — تفكير النموذج الداخلي أثناء التوليد؛
-                                   نماذج gpt-oss تبعثه بحقل reasoning منفصل
-                                   تلقائياً (include_reasoning=True افتراضياً
-                                   عند Groq) — يصل *قبل* أي 'chunk' فعلي على
-                                   الرسائل التي تحتاج تفكيراً أو بحثاً، لذا
-                                   يصلح كإشارة "الموديل شغّال" بدل ما تفضل
-                                   الواجهة بلا أي تحديث طول هذي المدة.
-      ('tool_start', 'اسم الأداة') — أول لحظة يبدأ فيها الموديل استخدام أداة
-                                   مدمجة (browser_search / code_interpreter)
-                                   — نبعثها مرة واحدة فقط لكل اسم أداة.
-      ('error', 'رسالة الخطأ')
-      ('done', 'النص الكامل')  — دائماً آخر عنصر يُرجَع (نص 'chunk' المجمّع فقط،
-                                   لا يشمل reasoning)
+    مولّد بث احتياطي من SambaNova (Llama 3.3 70B حقيقي) — يُستدعى فقط
+    من stream_chat_completion أدناه، وفقط بعد فشل Groq بكل نسخه (الموديل
+    الأساسي + GROQ_FALLBACK_MODEL الداخلي). نفس صيغة yield تماماً
+    (انظر توثيق stream_chat_completion) حتى يبقى المستدعي (routes/api.py)
+    بلا أي تغيير بمنطق معالجة الأحداث.
+
+    عمداً بدون tools ولا reasoning_effort — كلاهما خاص بصيغة gpt-oss/Harmony
+    عند Groq تحديداً، غير مفهوم لموديل Llama عادي هنا. يعني: لو Groq
+    استنفد فعلاً ووصلنا هذا المسار، رد هذه الرسالة بالذات لن يقدر يستخدم
+    browser_search/code_interpreter حتى لو النموذج ذكر إنه سيستخدمها
+    (system prompt مبني مسبقاً بافتراض توفرها) — حالة نادرة (فقط بعد
+    استنفاد Groq بالكامل) نقبلها بدل تعقيد تبني system prompt مختلف
+    حسب المزوّد الذي سيخدم الطلب فعلياً، غير معروف مسبقاً.
     """
-    def _stream(m):
-        return requests.post(
-            Config.GROQ_API_URL,
-            headers={"Authorization": f"Bearer {Config.GROQ_API_KEY}", "Content-Type": "application/json"},
+    if not Config.SAMBANOVA_API_KEY:
+        yield ('error', 'الخدمة الاحتياطية غير مُفعّلة حالياً (SAMBANOVA_API_KEY غير مضبوط)')
+        return
+    try:
+        resp = requests.post(
+            Config.SAMBANOVA_API_URL,
+            headers={"Authorization": f"Bearer {Config.SAMBANOVA_API_KEY}", "Content-Type": "application/json"},
             json={
-                "model": m, "messages": messages, "max_tokens": max_tokens,
-                "temperature": temperature, "top_p": 0.92, "stream": True,
-                **extra_params
+                "model": Config.SAMBANOVA_FALLBACK_MODEL,
+                "messages": messages,
+                "max_tokens": min(max_tokens, Config.SAMBANOVA_FALLBACK_MAX_TOKENS),
+                "temperature": temperature,
+                "stream": True,
             },
             stream=True, timeout=90
         )
-
-    try:
-        resp = _stream(model)
-        # 413 هنا تحديداً هو خطأ Groq "Request too large ... tokens per
-        # minute" — نفس نوع تجاوز حد Groq اللي 429 يمثّله لكن برسالة/كود
-        # HTTP مختلفين (راجع توثيق Groq: 413 لما الطلب الواحد نفسه أكبر
-        # من الحد، 429 لما تراكم الاستخدام خلال الدقيقة تجاوزه). كان
-        # مُستبعَداً هنا سابقاً فيصل خامّاً للمستخدم مباشرة بدل أي محاولة
-        # تعافي — أضفناه لنفس مسار fallback الموجود أصلاً لـ429.
-        if resp.status_code in (429, 413) and fallback_model:
-            resp.close()
-            resp = _stream(fallback_model)
-
         if not resp.ok:
             try:
                 err = resp.json()
             except Exception:
                 err = {}
-            err_obj = err.get('error', {}) or {}
-            raw_msg = err_obj.get('message', 'خطأ غير معروف')
-            log.error(f"خطأ Groq (HTTP {resp.status_code}): {raw_msg}")
-            # رسالة Groq الخام تقنية وبالإنجليزية بالكامل (حدود TPM،
-            # اسم organization...) — لا تصلح للعرض المباشر بواجهة عربية
-            # موجَّهة لمستخدم عادي. نستبدلها برسالة عربية مفهومة لهذا
-            # النوع تحديداً، ونُبقي التفاصيل الحقيقية باللوق فقط لمن يطوّر.
-            if err_obj.get('code') == 'rate_limit_exceeded' or resp.status_code in (413, 429):
-                yield ('error', '⚠️ المحادثة أو الرسالة طويلة جداً حالياً. جرّب تبدأ محادثة جديدة أو اختصر رسالتك وحاول مجدداً.')
-            else:
-                yield ('error', raw_msg)
+            yield ('error', err.get('error', {}).get('message', 'خطأ غير معروف من الخدمة الاحتياطية'))
             return
 
         full_text = ""
-        seen_tools = set()
         for line in resp.iter_lines():
             if not line:
                 continue
@@ -663,36 +578,134 @@ def stream_groq_completion(model, messages, temperature, max_tokens, extra_param
             except Exception:
                 continue
             delta = (chunk.get('choices') or [{}])[0].get('delta', {}) or {}
-
             content_piece = delta.get('content')
             if content_piece:
                 full_text += content_piece
                 yield ('chunk', content_piece)
-
-            reasoning_piece = delta.get('reasoning')
-            if reasoning_piece:
-                yield ('reasoning', reasoning_piece)
-
-            # بنية tool_calls بالبث قياسية بصيغة OpenAI: قطع فيها اسم
-            # الدالة جزئياً أو كاملاً — نلتقط أول ظهور لكل اسم فقط.
-            for tc in (delta.get('tool_calls') or []):
-                name = ((tc or {}).get('function') or {}).get('name')
-                if name and name not in seen_tools:
-                    seen_tools.add(name)
-                    yield ('tool_start', name)
         yield ('done', full_text)
 
     except requests.Timeout:
-        yield ('error', 'انتهت مهلة الاتصال. حاول مجدداً.')
+        yield ('error', 'انتهت مهلة الاتصال بالخدمة الاحتياطية. حاول مجدداً.')
+    except Exception as e:
+        log.error(f"خطأ في الاتصال بالخدمة الاحتياطية (SambaNova): {e}")
+        yield ('error', f'خطأ في الاتصال بالخدمة الاحتياطية: {str(e)}')
+
+
+def stream_chat_completion(model, messages, temperature, max_tokens, extra_params, fallback_model=None):
+    """
+    مولّد Python يبث القطع (chunks) القادمة من Groq أولاً بأول (Server-Sent
+    Events)، بدل انتظار الرد كاملاً. يrield tuples بصيغة (نوع, بيانات):
+      ('chunk', 'نص جزئي')      — جزء جديد من الرد النهائي (نص الإجابة نفسه)
+      ('reasoning', 'نص جزئي')  — تفكير النموذج الداخلي أثناء التوليد؛
+                                   نماذج gpt-oss تبعثه بحقل reasoning منفصل
+                                   تلقائياً (include_reasoning=True افتراضياً
+                                   عند Groq) — يصل *قبل* أي 'chunk' فعلي على
+                                   الرسائل التي تحتاج تفكيراً أو بحثاً، لذا
+                                   يصلح كإشارة "الموديل شغّال" بدل ما تفضل
+                                   الواجهة بلا أي تحديث طول هذي المدة.
+      ('tool_start', 'اسم الأداة') — أول لحظة يبدأ فيها الموديل استخدام أداة
+                                   مدمجة (browser_search / code_interpreter)
+                                   — نبعثها مرة واحدة فقط لكل اسم أداة.
+      ('fallback_provider', 'sambanova') — تصل مرة واحدة فقط، فقط لو Groq
+                                   فشل بكل نسخه وانتقلنا فعلاً لمزوّد
+                                   احتياطي مختلف كلياً (انظر أدناه). نوع
+                                   غير معروف عند أي مستدعي قديم — يُتجاهل
+                                   بأمان بلا كسر شيء (routes/api.py الحالي
+                                   لا يتحقق من كل نوع صراحة قبل هذا التعديل).
+      ('error', 'رسالة الخطأ')
+      ('done', 'النص الكامل')  — دائماً آخر عنصر يُرجَع (نص 'chunk' المجمّع فقط،
+                                   لا يشمل reasoning)
+
+    عند فشل Groq بكل نسخه (429 أو أي خطأ آخر)، ولو ENABLE_CROSS_PROVIDER_FALLBACK
+    مفعّلة وSAMBANOVA_API_KEY موجود: ننتقل تلقائياً وبشفافية لـLlama 3.3 70B
+    حقيقي عبر SambaNova (مزوّد مختلف كلياً — سقف Groq اليومي/الدقيقي لا
+    يؤثر عليه إطلاقاً). راجع تعليق "مزوّد احتياطي" بـconfig.py لتفاصيل
+    لماذا SambaNova تحديداً. لو الاحتياطي معطّل أو غير مضبوط، السلوك
+    يبقى بالضبط كالسابق (خطأ Groq الأصلي يوصل للمستخدم كما هو).
+    """
+    def _stream(m):
+        return requests.post(
+            Config.GROQ_API_URL,
+            headers={"Authorization": f"Bearer {Config.GROQ_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": m, "messages": messages, "max_tokens": max_tokens,
+                "temperature": temperature, "top_p": 0.92, "stream": True,
+                **extra_params
+            },
+            stream=True, timeout=90
+        )
+
+    groq_error = None
+    try:
+        resp = _stream(model)
+        if resp.status_code == 429 and fallback_model:
+            resp.close()
+            resp = _stream(fallback_model)
+
+        if not resp.ok:
+            try:
+                err = resp.json()
+            except Exception:
+                err = {}
+            groq_error = err.get('error', {}).get('message', 'خطأ غير معروف')
+        else:
+            full_text = ""
+            seen_tools = set()
+            for line in resp.iter_lines():
+                if not line:
+                    continue
+                decoded = line.decode('utf-8')
+                if not decoded.startswith('data: '):
+                    continue
+                payload = decoded[len('data: '):]
+                if payload.strip() == '[DONE]':
+                    break
+                try:
+                    chunk = json.loads(payload)
+                except Exception:
+                    continue
+                delta = (chunk.get('choices') or [{}])[0].get('delta', {}) or {}
+
+                content_piece = delta.get('content')
+                if content_piece:
+                    full_text += content_piece
+                    yield ('chunk', content_piece)
+
+                reasoning_piece = delta.get('reasoning')
+                if reasoning_piece:
+                    yield ('reasoning', reasoning_piece)
+
+                # بنية tool_calls بالبث قياسية بصيغة OpenAI: قطع فيها اسم
+                # الدالة جزئياً أو كاملاً — نلتقط أول ظهور لكل اسم فقط.
+                for tc in (delta.get('tool_calls') or []):
+                    name = ((tc or {}).get('function') or {}).get('name')
+                    if name and name not in seen_tools:
+                        seen_tools.add(name)
+                        yield ('tool_start', name)
+            yield ('done', full_text)
+            return  # Groq نجح (بموديله الأساسي أو الداخلي) — انتهى، بدون أي احتياطي
+
+    except requests.Timeout:
+        groq_error = 'انتهت مهلة الاتصال. حاول مجدداً.'
     except Exception as e:
         log.error(f"خطأ في الاتصال ببث Groq: {e}")
-        yield ('error', f'خطأ في الاتصال: {str(e)}')
+        groq_error = f'خطأ في الاتصال: {str(e)}'
+
+    # ما وصلنا هنا إلا لو Groq فشل فعلاً (بكل نسخه) — نجرب الاحتياطي
+    # المختلف كلياً بالمزوّد لو مفعّل ومفتاحه موجود، وإلا نرجع خطأ Groq
+    # الأصلي كما هو (بالضبط السلوك القديم لو الاحتياطي معطّل أو غير مضبوط).
+    if not (Config.ENABLE_CROSS_PROVIDER_FALLBACK and Config.SAMBANOVA_API_KEY):
+        yield ('error', groq_error)
+        return
+
+    yield ('fallback_provider', 'sambanova')
+    yield from _stream_sambanova_fallback(messages, temperature, max_tokens)
 
 
 def call_vision_model(messages):
     """
     طلب عادي (غير مبثوث) لتحليل صورة — رد واحد كامل، ليس بطول محادثة
-    نصية عادة. نفس منطق fallback الموجود بـstream_groq_completion
+    نصية عادة. نفس منطق fallback الموجود بـstream_chat_completion
     بالضبط: إعادة محاولة واحدة بموديل رؤية بديل مستقل عند 429 فقط،
     وحماية تحليل JSON من رد غير متوقع (صفحة خطأ HTML من بروكسي مثلاً).
     """
