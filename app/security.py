@@ -62,11 +62,6 @@ def sanitize_input(text: str) -> str:
     return text[:Config.MAX_MSG_LENGTH].strip()
 
 
-def is_prompt_injection(text: str) -> bool:
-    text_lower = (text or '').lower()
-    return any(re.search(pattern, text_lower) for pattern in Config.BANNED_PATTERNS)
-
-
 # ─── عنوان IP الحقيقي خلف بروكسي Render ────────────────────────
 # ⚠️ لم أغيّر [0] هنا لأن الأدلة الفعلية اللي لقيتها متناقضة حرفياً، لا
 # مجرد "غير مؤكدة نظرياً":
