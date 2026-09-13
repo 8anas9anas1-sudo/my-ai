@@ -14,6 +14,15 @@ let chats = {};
 let dbChats = [];
 let currentFile = null;
 let currentMode = localStorage.getItem('mode') || 'fast';
+let currentModelFamily = localStorage.getItem('modelFamily') || 'groq';
+// إعدادات مثبَّتة فعلياً (من أول رسالة) لكل محادثة عندها رسائل — يُقرأ
+// منها لعرض/قفل الأزرار الصحيحة عند تصفّح محادثة قديمة، بمعزل عن آخر
+// اختيار عام للمستخدم (currentMode/currentModelFamily، يُستخدمان فقط
+// كافتراض لمحادثة جديدة كلياً). مفتاح منفصل بلا استيراد داخل مصفوفة
+// chats نفسها لأن JSON.stringify على مصفوفة يتجاهل أي خاصية مخصَّصة
+// ملحَقة بها.
+let chatSettings = {};
+try { chatSettings = JSON.parse(localStorage.getItem('chatSettings') || '{}'); } catch(e) { chatSettings = {}; }
 let isSending = false;
 let pendingDeleteId = null;
 
@@ -22,6 +31,7 @@ async function init() {
   generateStars();
   try { chats = JSON.parse(localStorage.getItem('chats') || '{}'); } catch(e) { chats = {}; }
   setMode(currentMode, false);
+  setModelFamily(currentModelFamily, false);
   loadTheme();
   renderChat();
   await loadDbChats();
@@ -41,9 +51,6 @@ function generateStars() {
 
 // ─── Toast ────────────────────────────────────────────────────
 const TOAST_ICONS = { success: 'fa-circle-check', error: 'fa-triangle-exclamation', '': 'fa-circle-info' };
-// Groq استُنفد مؤقتاً لهذه الرسالة والرد جاء من موديل احتياطي (Llama عبر
-// SambaNova) — تنبيه هادئ فقط، الرد نفسه وصل بنجاح فلا داعي لأي قلق.
-const FALLBACK_PROVIDER_MSG = 'تم الرد بموديل احتياطي مجاني (Llama) بسبب ضغط مؤقت على الخدمة الأساسية';
 
 function showToast(msg, type = '') {
   const t = document.getElementById('toast');
@@ -62,6 +69,44 @@ function showToast(msg, type = '') {
   showToast._h = setTimeout(() => t.className = 'toast', duration);
 }
 
+// ─── Quota switch modal (Groq → Meta family) ────────────────────
+// صياغة مدة عربية ودودة من ثوانٍ خام (retry_after الحقيقي من رأس Groq
+// نفسه — لا رقم ثابت مخترَع). تغطي فقط الحالات الشائعة فعلياً لحدود
+// Groq (دقائق قليلة إلى بضع ساعات)؛ null/0/سالب يرجع null (المستدعي
+// يعرض صياغة عامة بدون رقم عندها).
+function formatDurationAr(seconds) {
+  if (!seconds || seconds <= 0) return null;
+  if (seconds < 90) return 'خلال دقيقتين تقريباً';
+  const mins = Math.round(seconds / 60);
+  if (mins < 60) {
+    if (mins === 1) return 'خلال دقيقة تقريباً';
+    if (mins === 2) return 'خلال دقيقتين تقريباً';
+    if (mins <= 10) return `خلال ${mins} دقائق تقريباً`;
+    return `خلال ${mins} دقيقة تقريباً`;
+  }
+  const hours = Math.round(seconds / 3600);
+  if (hours === 1) return 'خلال ساعة تقريباً';
+  if (hours === 2) return 'خلال ساعتين تقريباً';
+  if (hours <= 10) return `خلال ${hours} ساعات تقريباً`;
+  return `خلال ${hours} ساعة تقريباً`;
+}
+
+// تصل فقط لو Groq (Wadi 5.4) استُنفد فعلياً بكل نسخه والتبديل التلقائي
+// لعائلة Meta (Wadi 3.3) صار — وليس عند اختيار المستخدم لـWadi 3.3
+// صراحة من البداية (ai_service.py لا يُطلق الحدث بتلك الحالة إطلاقاً).
+function showQuotaSwitchModal(retryAfterSeconds) {
+  const durationText = formatDurationAr(retryAfterSeconds);
+  const whenText = durationText
+    ? `ومن المتوقع يرجع يشتغل ${durationText}.`
+    : 'ومن المتوقع يرجع يشتغل تلقائياً خلال وقت قريب.';
+  const msgEl = document.getElementById('quotaSwitchMsg');
+  if (msgEl) {
+    msgEl.textContent = `وصل Wadi 5.4 لحد استخدامه المجاني المؤقت، ${whenText} `
+      + `باش ما تنتظر، جاري الرد الآن عبر Wadi 3.3 (نموذج احتياطي مجاني).`;
+  }
+  document.getElementById('quotaSwitchModal')?.classList.add('open');
+}
+
 // ─── Mode ─────────────────────────────────────────────────────
 const MODE_META = {
   fast:     { icon: 'fa-bolt',            label: 'سريع'  },
@@ -76,7 +121,7 @@ function setMode(m, save = true) {
   const changed = m !== currentMode;
   currentMode = m;
   if (save) localStorage.setItem('mode', m);
-  document.querySelectorAll('.mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
+  document.querySelectorAll('.mode-btn[data-mode]').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
   // وضع المبرمج له هوية بصرية مختلفة فعلياً (CSS تحت body[data-app-mode="coder"])
   // — لا مجرد تغيير لون تمييزي. نضيف/نحذف السمة بدل تركها فارغة حتى ما
   // تُطابق بالخطأ أي selector بقيمة فارغة.
@@ -102,23 +147,66 @@ function setMode(m, save = true) {
   }
 }
 
+// ─── Model family (Wadi 5.4 = Groq / Wadi 3.3 = Meta) ──────────
+const MODEL_FAMILY_META = {
+  groq: { icon: 'fa-server', label: 'Wadi 5.4' },
+  meta: { icon: 'fa-cloud',  label: 'Wadi 3.3' },
+};
+
+function setModelFamily(f, save = true) {
+  currentModelFamily = f;
+  if (save) localStorage.setItem('modelFamily', f);
+  document.querySelectorAll('.mode-btn[data-family]').forEach(b => b.classList.toggle('active', b.dataset.family === f));
+  const meta = MODEL_FAMILY_META[f] || MODEL_FAMILY_META.groq;
+  const pillIcon = document.getElementById('modelFamilyPillIcon');
+  const pillLabel = document.getElementById('modelFamilyPillLabel');
+  if (pillIcon) pillIcon.className = 'fa-solid ' + meta.icon;
+  if (pillLabel) pillLabel.textContent = meta.label;
+  document.getElementById('modelFamilyDropdown')?.classList.add('hidden');
+}
+
 function toggleModeDropdown() {
-  document.getElementById('toolsPopup')?.classList.add('hidden');
+  document.getElementById('modelFamilyDropdown')?.classList.add('hidden');
+  if (document.getElementById('modePill')?.classList.contains('locked')) {
+    showToast('الوضع مثبَّت لهذه المحادثة — بدّله من محادثة جديدة', '');
+    return;
+  }
   document.getElementById('modeDropdown')?.classList.toggle('hidden');
 }
-function toggleToolsPopup() {
+function toggleModelFamilyDropdown() {
   document.getElementById('modeDropdown')?.classList.add('hidden');
-  document.getElementById('toolsPopup')?.classList.toggle('hidden');
-}
-function closeToolsPopup() {
-  document.getElementById('toolsPopup')?.classList.add('hidden');
+  if (document.getElementById('modelFamilyPill')?.classList.contains('locked')) {
+    showToast('النموذج مثبَّت لهذه المحادثة — بدّله من محادثة جديدة', '');
+    return;
+  }
+  document.getElementById('modelFamilyDropdown')?.classList.toggle('hidden');
 }
 document.addEventListener('click', (e) => {
-  const modeWrap = document.querySelector('.mode-selector-wrap');
-  const toolsWrap = document.querySelector('.tools-wrap');
+  const modeWrap = document.getElementById('modeDropdown')?.closest('.mode-selector-wrap');
+  const familyWrap = document.getElementById('modelFamilyDropdown')?.closest('.mode-selector-wrap');
   if (modeWrap && !modeWrap.contains(e.target)) document.getElementById('modeDropdown')?.classList.add('hidden');
-  if (toolsWrap && !toolsWrap.contains(e.target)) document.getElementById('toolsPopup')?.classList.add('hidden');
+  if (familyWrap && !familyWrap.contains(e.target)) document.getElementById('modelFamilyDropdown')?.classList.add('hidden');
 });
+
+// ─── قفل الوضع/النموذج بمحادثة بدأت فعلاً ───────────────────────
+// الوضع وعائلة الموديل يُختاران بحرّية فقط قبل أول رسالة بأي محادثة —
+// بعدها يُثبَّتان طول عمرها (نفس منطق اختيار موديل بمحادثات كلود: تبدّل
+// الموديل يحتاج محادثة جديدة). التطبيق الفعلي للقفل من طرف الخادم
+// (get_chat_locked_settings بـdb.py)؛ هذا فقط يعكس ذلك بالواجهة.
+function updatePickerLocks() {
+  const hasMessages = (chats[currentChatId] || []).length > 0;
+  const saved = chatSettings[currentChatId];
+  if (hasMessages && saved) {
+    setMode(saved.mode || currentMode, false);
+    setModelFamily(saved.model_family || currentModelFamily, false);
+  }
+  document.getElementById('modePill')?.classList.toggle('locked', hasMessages);
+  document.getElementById('modelFamilyPill')?.classList.toggle('locked', hasMessages);
+}
+
+function saveChatSettings() {
+  try { localStorage.setItem('chatSettings', JSON.stringify(chatSettings)); } catch(e) {}
+}
 
 // ─── DB Chats ─────────────────────────────────────────────────
 async function loadDbChats() {
@@ -241,6 +329,17 @@ async function loadChatFromDb(chatId) {
       rawAi: m.raw_ai, imageUrl: m.image_url, fileName: m.file_name,
       userImageUrl: m.uploaded_image_url, reasoning: m.reasoning || ''
     }));
+    // نثبّت الوضع/عائلة الموديل المستخدَمين فعلياً بأول رسالة — تُستخدم
+    // لعرض الزرّين الصحيحين وقفلهما عند فتح محادثة قديمة (mode/model_family
+    // موجودان بكل رسالة لأن get_chat_messages بـdb.py يرجّعهما الآن، لكن
+    // القيمة اللي تهمّنا هي أول رسالة تحديداً — هي اللي حدّدت القفل).
+    if (messages.length > 0) {
+      chatSettings[chatId] = {
+        mode: messages[0].mode || 'fast',
+        model_family: messages[0].model_family || 'groq',
+      };
+      saveChatSettings();
+    }
     saveChats();
     return true;
   } catch(e) { return false; }
@@ -277,6 +376,7 @@ function newChat() {
 function renderChat() {
   const c = document.getElementById('chatContainer');
   const h = chats[currentChatId] || [];
+  updatePickerLocks();
   if (h.length === 0) {
     c.innerHTML = `<div class="welcome" id="welcome">
       <img src="/static/images/logo.png" alt="Wadi" class="welcome-icon-img">
@@ -616,7 +716,7 @@ function escHtml(t) {
 // ─── Streaming (SSE عبر fetch) ─────────────────────────────────
 // نتعامل مع البث عبر fetch + ReadableStream بدل EventSource، لأن
 // EventSource يدعم GET فقط ولا يسمح بإرسال FormData/ملفات.
-async function streamChat(fd, { onFirstChunk, onChunk, onReasoning, onToolStart, onFallbackProvider, onDone, onError } = {}) {
+async function streamChat(fd, { onFirstChunk, onChunk, onReasoning, onToolStart, onQuotaSwitch, onDone, onError } = {}) {
   let r;
   try {
     r = await fetch('/api/chat', { method: 'POST', headers: { 'X-CSRFToken': CSRF_TOKEN }, body: fd });
@@ -654,8 +754,8 @@ async function streamChat(fd, { onFirstChunk, onChunk, onReasoning, onToolStart,
         onReasoning && onReasoning(evt.content);
       } else if (evt.type === 'tool_start') {
         onToolStart && onToolStart(evt.tool);
-      } else if (evt.type === 'fallback_provider') {
-        onFallbackProvider && onFallbackProvider(evt.provider);
+      } else if (evt.type === 'quota_switch') {
+        onQuotaSwitch && onQuotaSwitch(evt.retryAfter);
       } else if (evt.type === 'error') {
         onError && onError(evt.error || 'حدث خطأ');
       } else if (evt.type === 'done') {
@@ -686,14 +786,22 @@ async function sendMessage() {
   const isImageFile = currentFile && currentFile.type && currentFile.type.startsWith('image/');
   const localPreviewUrl = isImageFile ? URL.createObjectURL(currentFile) : null;
   c.push({ user: t || 'حلل الملف', ai: '__typing__', fileName: fName, userImageUrl: localPreviewUrl });
-  saveChats(); renderChat();
   const msgIndex = c.length - 1;
+  // أول رسالة بهذه المحادثة — الوضع وعائلة الموديل المختاران الآن
+  // يُثبَّتان لعمرها كاملاً (راجع updatePickerLocks أعلاه وget_chat_locked_settings
+  // بـdb.py للفرض الفعلي من طرف الخادم).
+  if (msgIndex === 0) {
+    chatSettings[currentChatId] = { mode: currentMode, model_family: currentModelFamily };
+    saveChatSettings();
+  }
+  saveChats(); renderChat();
 
   // ملاحظة: لا نرسل history من المتصفح — الخادم يبني السياق من قاعدة
   // البيانات مباشرة (chat_id + المستخدم) لمنع التلاعب بسجل المحادثة.
   const fd = new FormData();
   fd.append('message', t);
   fd.append('mode', currentMode);
+  fd.append('model_family', currentModelFamily);
   fd.append('chat_id', currentChatId);
   if (currentFile) fd.append('file', currentFile);
 
@@ -706,7 +814,7 @@ async function sendMessage() {
       onToolStart: (tool) => {
         if (c[msgIndex].ai === '__typing__') updateStatusIndicator(msgIndex, TOOL_STATUS_LABELS[tool] || 'يعمل...');
       },
-      onFallbackProvider: () => showToast(FALLBACK_PROVIDER_MSG, ''),
+      onQuotaSwitch: (retryAfter) => showQuotaSwitchModal(retryAfter),
       onFirstChunk: () => { c[msgIndex].ai = ''; },
       onChunk: (rawAccum) => { c[msgIndex].ai = rawAccum; updateStreamingContent(msgIndex, rawAccum); },
       onDone: (evt) => {
@@ -779,6 +887,7 @@ async function regenerate(i) {
   c[i].ai = '__typing__'; renderChat();
   const fd = new FormData();
   fd.append('message', u); fd.append('mode', currentMode);
+  fd.append('model_family', currentModelFamily);
   fd.append('chat_id', currentChatId);
   // نمرر id الرسالة الحالية بدل تاريخ كامل من المتصفح — الخادم يبني
   // السياق من قاعدة البيانات ويستثني هذه الرسالة وما بعدها تلقائياً.
@@ -789,7 +898,7 @@ async function regenerate(i) {
       onToolStart: (tool) => {
         if (c[i].ai === '__typing__') updateStatusIndicator(i, TOOL_STATUS_LABELS[tool] || 'يعمل...');
       },
-      onFallbackProvider: () => showToast(FALLBACK_PROVIDER_MSG, ''),
+      onQuotaSwitch: (retryAfter) => showQuotaSwitchModal(retryAfter),
       onFirstChunk: () => { c[i].ai = ''; },
       onChunk: (rawAccum) => { c[i].ai = rawAccum; updateStreamingContent(i, rawAccum); },
       onDone: (evt) => {

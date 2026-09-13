@@ -56,6 +56,12 @@ def init_db():
                     -- تبديل محادثة ثم الرجوع لها. NULL للرسائل التي ما مرّت
                     -- بمرحلة تفكير (أو المحفوظة قبل هذا العمود).
                     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS reasoning TEXT;
+                    -- عائلة الموديل (Wadi 5.4/Groq أو Wadi 3.3/Meta) المختارة
+                    -- من المستخدم لأول رسالة بالمحادثة — تُقرأ لاحقاً من أول
+                    -- صف بكل chat_id لتثبيت الاختيار طول عمر المحادثة (انظر
+                    -- get_chat_locked_settings أدناه). NULL/'groq' للرسائل
+                    -- القديمة قبل هذا العمود = تعمل كالسابق تماماً (Groq).
+                    ALTER TABLE conversations ADD COLUMN IF NOT EXISTS model_family TEXT DEFAULT 'groq';
                 """)
                 cur.execute("""
                     -- ذاكرة طويلة المدى: ملخص واحد لكل محادثة، يُحدَّث
@@ -198,7 +204,7 @@ def verify_user(email, password):
 # ─── المحادثات ──────────────────────────────────────────────────
 def save_message(chat_id, user_email, user_name, user_message, ai_response,
                   raw_ai, mode, image_url=None, file_name=None, uploaded_image_path=None,
-                  reasoning=None):
+                  reasoning=None, model_family='groq'):
     """يحفظ الرسالة ويرجّع id الصف الجديد (يُستخدم لاحقاً لإعادة توليد دقيقة)."""
     if not db_pool:
         return None
@@ -207,16 +213,46 @@ def save_message(chat_id, user_email, user_name, user_message, ai_response,
             with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO conversations
-                        (chat_id, user_email, user_name, user_message, ai_response, raw_ai, mode, image_url, file_name, uploaded_image_path, reasoning)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        (chat_id, user_email, user_name, user_message, ai_response, raw_ai, mode, image_url, file_name, uploaded_image_path, reasoning, model_family)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """, (chat_id, user_email, user_name, user_message, ai_response, raw_ai, mode,
-                      image_url, file_name, uploaded_image_path, reasoning))
+                      image_url, file_name, uploaded_image_path, reasoning, model_family))
                 new_id = cur.fetchone()['id']
             conn.commit()
         return new_id
     except Exception as e:
         log.error(f"خطأ في حفظ الرسالة: {e}")
+        return None
+
+
+def get_chat_locked_settings(chat_id, user_email):
+    """
+    الوضع (mode) وعائلة الموديل (model_family) "المثبَّتان" لمحادثة
+    موجودة فعلاً — نقرأهما من *أول* رسالة بها (لا آخر واحدة: أول رسالة
+    هي اللي حدّدت الاختيار، ونثبّته طول عمر المحادثة — راجع طلب المستخدم
+    "ماراح تقدر تغيره لين تفتح محادثة جديدة"). يرجّع None لمحادثة جديدة
+    كلياً (بلا أي رسالة بعد) — عندها القيم المُرسَلة من الطلب نفسه هي
+    اللي تُعتمَد وتُثبَّت.
+
+    تُستدعى من routes/api.py *قبل* أي توليد رد — تفرض القفل من طرف
+    الخادم نفسه (لا تعتمد فقط على تعطيل الواجهة بالمتصفح، اللي يمكن
+    تجاوزه بسهولة بطلب API مباشر).
+    """
+    if not db_pool:
+        return None
+    try:
+        with db_pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT mode, model_family FROM conversations
+                    WHERE chat_id = %s AND user_email = %s
+                    ORDER BY id ASC LIMIT 1
+                """, (chat_id, user_email))
+                row = cur.fetchone()
+                return dict(row) if row else None
+    except Exception as e:
+        log.error(f"خطأ في جلب إعدادات المحادثة المثبَّتة: {e}")
         return None
 
 
@@ -282,7 +318,7 @@ def get_chat_messages(chat_id, user_email, limit=None):
                     cur.execute("""
                         SELECT * FROM (
                             SELECT id, user_message, ai_response, raw_ai, image_url, file_name,
-                                   uploaded_image_path, reasoning, created_at
+                                   uploaded_image_path, reasoning, mode, model_family, created_at
                             FROM conversations
                             WHERE chat_id = %s AND user_email = %s
                             ORDER BY id DESC
@@ -292,7 +328,7 @@ def get_chat_messages(chat_id, user_email, limit=None):
                 else:
                     cur.execute("""
                         SELECT id, user_message, ai_response, raw_ai, image_url, file_name,
-                               uploaded_image_path, reasoning, created_at
+                               uploaded_image_path, reasoning, mode, model_family, created_at
                         FROM conversations
                         WHERE chat_id = %s AND user_email = %s
                         ORDER BY created_at ASC

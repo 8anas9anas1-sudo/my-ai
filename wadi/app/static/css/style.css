@@ -259,7 +259,7 @@ body::before {
   display:flex; align-items:center; gap:8px; margin-bottom:9px;
   max-width:800px; margin-right:auto; margin-left:auto;
 }
-.mode-selector-wrap, .tools-wrap { position:relative; }
+.mode-selector-wrap { position:relative; }
 
 .mode-pill {
   background:var(--surface); border:1px solid var(--border);
@@ -278,7 +278,7 @@ body::before {
 }
 .mode-pill-chevron { font-size:9px; color:var(--text-dim); margin-right:1px; }
 
-.mode-dropdown, .tools-popup {
+.mode-dropdown {
   position:absolute; bottom:calc(100% + 8px); right:0;
   background:var(--sidebar-bg); border:1px solid var(--border);
   border-radius:14px; padding:6px; min-width:170px;
@@ -286,8 +286,8 @@ body::before {
   box-shadow:0 10px 30px rgba(0,0,0,0.4); backdrop-filter:blur(20px);
   z-index:20; transform-origin:bottom right;
 }
-.mode-dropdown.hidden, .tools-popup.hidden { display:none; }
-.mode-dropdown:not(.hidden), .tools-popup:not(.hidden) {
+.mode-dropdown.hidden { display:none; }
+.mode-dropdown:not(.hidden) {
   animation:dropdownPop 0.22s cubic-bezier(0.34,1.56,0.64,1) both;
 }
 @keyframes dropdownPop {
@@ -296,29 +296,26 @@ body::before {
 }
 .mode-dropdown-divider { height:1px; background:var(--border); margin:5px 4px; }
 
-.mode-dropdown .mode-btn, .tools-popup .template-btn {
+.mode-dropdown .mode-btn {
   background:transparent; border:none; color:var(--text-dim);
   padding:9px 10px; border-radius:9px; font-size:13px; font-weight:600;
   font-family:'Tajawal',sans-serif; cursor:pointer; text-align:right;
   display:flex; align-items:center; gap:9px; width:100%;
   transition:background 0.15s, transform 0.15s, color 0.15s;
 }
-.mode-dropdown .mode-btn:hover, .tools-popup .template-btn:hover { background:var(--surface2); color:var(--text); }
-.mode-dropdown .mode-btn:active, .tools-popup .template-btn:active { transform:scale(0.97); background:var(--surface3); }
+.mode-dropdown .mode-btn:hover { background:var(--surface2); color:var(--text); }
+.mode-dropdown .mode-btn:active { transform:scale(0.97); background:var(--surface3); }
 .mode-dropdown .mode-btn.active { background:var(--surface3); color:var(--accent1); font-weight:800; }
-.mode-dropdown .mode-btn i, .tools-popup .template-btn i { width:16px; text-align:center; color:var(--accent1); }
+.mode-dropdown .mode-btn i { width:16px; text-align:center; color:var(--accent1); }
 
-.tools-btn {
-  background:var(--surface); border:1px solid var(--border);
-  color:var(--text); width:36px; height:36px; border-radius:50%;
-  cursor:pointer; font-size:14px; transition:all 0.22s;
-  display:flex; align-items:center; justify-content:center; flex-shrink:0;
-}
-.tools-btn:hover { border-color:var(--border-glow); box-shadow:var(--glow); transform:rotate(90deg); }
-.tools-btn:active { transform:rotate(90deg) scale(0.88); }
+/* بعد قفل الوضع/عائلة الموديل بمحادثة بدأت فعلاً (راجع updatePickerLocks
+   بـapp.js) — نفس شكل الزر لكن بلا تفاعل، مع مؤشر قفل صغير بدل السهم. */
+.mode-pill.locked { cursor:default; opacity:0.75; }
+.mode-pill.locked:hover { border-color:var(--border); box-shadow:none; }
+.mode-pill.locked .mode-pill-chevron::before { content:"\f023"; } /* fa-lock */
 
 @media (max-width: 480px) {
-  .mode-dropdown, .tools-popup { min-width:150px; }
+  .mode-dropdown { min-width:150px; }
 }
 
 
@@ -900,5 +897,5 @@ body[data-app-mode="coder"] .send-btn { width:56px; height:56px; border-radius:1
 body[data-app-mode="coder"] .welcome-card { border-radius:9px; border-color:rgba(255,176,32,0.18); }
 body[data-app-mode="coder"] .welcome-card .card-title { font-family:'JetBrains Mono',monospace; font-size:12.5px; }
 body[data-app-mode="coder"] .welcome-icon-img { filter:drop-shadow(0 0 10px rgba(255,176,32,0.35)); animation:none; }
-body[data-app-mode="coder"] .mode-dropdown, body[data-app-mode="coder"] .tools-popup { border-radius:10px; }
+body[data-app-mode="coder"] .mode-dropdown { border-radius:10px; }
 body[data-app-mode="coder"] .msg-btn { border-radius:7px; }

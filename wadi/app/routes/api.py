@@ -9,6 +9,7 @@ from app.extensions import limiter, log
 from app.db import (
     get_user_chats, get_chat_messages, get_chat_history_for_context,
     delete_chat_from_db, save_message, try_consume_daily_usage,
+    get_chat_locked_settings,
 )
 from app.security import sanitize_input, is_valid_chat_id, is_valid_image_upload
 from app.ai_service import (
@@ -95,6 +96,9 @@ def chat():
     original_raw_message = request.form.get("message", "")
     user_message = sanitize_input(original_raw_message)
     mode = request.form.get("mode", "fast")
+    model_family = request.form.get("model_family", Config.DEFAULT_MODEL_FAMILY)
+    if model_family not in Config.MODEL_FAMILIES:
+        model_family = Config.DEFAULT_MODEL_FAMILY
     chat_id = request.form.get("chat_id", "")
     if chat_id and not is_valid_chat_id(chat_id):
         # صيغة غير متوقَّعة (chat_id شرعي دائماً رقم صحيح فقط، انظر
@@ -106,6 +110,17 @@ def chat():
     user_info = session.get('user', {})
     user_email = user_info.get('email', 'anonymous')
     user_name = user_info.get('name', 'مستخدم')
+
+    # الوضع وعائلة الموديل يُثبَّتان بأول رسالة بكل محادثة ولا يتغيّران
+    # بعدها إلا بمحادثة جديدة — الواجهة تعطّل التبديل أصلاً، لكن هذا
+    # هو الفرض *الفعلي* من طرف الخادم (لا يمكن تجاوزه بطلب API مباشر
+    # يرسل قيمة مختلفة). محادثة جديدة كلياً (بلا رسائل بعد) ما عندها
+    # إعدادات مثبَّتة — قيم هذا الطلب نفسه هي اللي تُثبَّت بأول رسالة.
+    if chat_id and user_email != 'anonymous':
+        locked = get_chat_locked_settings(chat_id, user_email)
+        if locked:
+            mode = locked.get('mode') or mode
+            model_family = locked.get('model_family') or model_family
 
     # حصة استخدام يومية لكل فرد عائلة — حماية من استنزاف حد Groq
     # المجاني المشترك بين كل حسابات العائلة. الفحص هنا عمداً قبل أي
@@ -164,7 +179,8 @@ def chat():
             new_id = None
             if chat_id:
                 new_id = save_message(chat_id, user_email, user_name, user_message,
-                                       response_text, raw_text, mode, image_url=display_url)
+                                       response_text, raw_text, mode, image_url=display_url,
+                                       model_family=model_family)
             yield _sse('done', response=response_text, rawResponse=raw_text, imageUrl=display_url, id=new_id)
             return
 
@@ -218,7 +234,8 @@ def chat():
                 if chat_id:
                     new_id = save_message(chat_id, user_email, user_name,
                                            local_user_message or 'تحليل صورة', formatted, raw,
-                                           mode, file_name=file_name, uploaded_image_path=storage_path)
+                                           mode, file_name=file_name, uploaded_image_path=storage_path,
+                                           model_family=model_family)
                 yield _sse('done', response=formatted, rawResponse=raw, id=new_id,
                            uploadedImageUrl=display_upload_url)
                 return
@@ -260,8 +277,10 @@ def chat():
         extra_params = {'reasoning_effort': Config.REASONING_MAP.get(mode, 'low')}
         # أدوات Groq المدمجة (بحث ويب حي + تنفيذ كود فعلي) — الموديل نفسه
         # يقرر إذا يحتاجها لهذي الرسالة بالذات (tool_choice="auto")، ما
-        # نفرضها بكل رد. تعمل فقط مع gpt-oss (كل موديلاتنا الحالية).
-        if Config.ENABLE_BUILTIN_TOOLS and supports_builtin_tools(model):
+        # نفرضها بكل رد. تعمل فقط مع gpt-oss (كل موديلاتنا الحالية)، وفقط
+        # لو عائلة الموديل المختارة فعلياً هي Groq (Wadi 5.4) — عائلة Meta
+        # (Wadi 3.3) ستتجاوز Groq كلياً فلا فائدة من تجهيزها أصلاً.
+        if model_family == 'groq' and Config.ENABLE_BUILTIN_TOOLS and supports_builtin_tools(model):
             extra_params['tools'] = Config.BUILTIN_TOOLS
             extra_params['tool_choice'] = 'auto'
         fallback_model = Config.GROQ_FALLBACK_MODEL.get(model)
@@ -272,7 +291,7 @@ def chat():
         full_reasoning = ""
         had_error = False
         for kind, data in stream_chat_completion(model, final_messages, temperature, max_tokens,
-                                                   extra_params, fallback_model):
+                                                   extra_params, fallback_model, model_family=model_family):
             if kind == 'chunk':
                 full_raw += data
                 yield _sse('chunk', content=data)
@@ -281,13 +300,18 @@ def chat():
                 yield _sse('reasoning', content=data)
             elif kind == 'tool_start':
                 yield _sse('tool_start', tool=data)
-            elif kind == 'fallback_provider':
-                # Groq استُنفد بالكامل لهذه الرسالة — الرد قادم فعلياً من
-                # موديل احتياطي مختلف (Llama عبر SambaNova). نمرر الحدث
-                # للواجهة فقط لإظهار تنبيه هادئ؛ لا يؤثر على تدفق الرد نفسه.
-                yield _sse('fallback_provider', provider=data)
+            elif kind == 'quota_switch':
+                # Groq (Wadi 5.4) استُنفد بالكامل لهذه الرسالة — الرد قادم
+                # فعلياً من عائلة Meta الاحتياطية (Wadi 3.3). نمرر تفاصيل
+                # كافية للواجهة تعرض إشعاراً احترافياً واضحاً (لا مجرد toast
+                # عابر) بدل ما يكتشف المستخدم التبديل ضمنياً من نوع الرد.
+                log.error(f"تبديل عائلة الموديل تلقائياً Groq→Meta (مستخدم: {user_email}, "
+                          f"محادثة: {chat_id or 'بلا حفظ'}, إعادة محاولة بعد: {data.get('retry_after')}ث)")
+                yield _sse('quota_switch', retryAfter=data.get('retry_after'))
             elif kind == 'error':
                 had_error = True
+                log.error(f"فشل توليد الرد بالكامل (مستخدم: {user_email}, وضع: {mode}, "
+                          f"محادثة: {chat_id or 'بلا حفظ'}): {data}")
                 yield _sse('error', error=data)
             elif kind == 'done':
                 full_raw = data or full_raw
@@ -302,7 +326,7 @@ def chat():
                 chat_id=chat_id, user_email=user_email, user_name=user_name,
                 user_message=original_raw_message, ai_response=formatted,
                 raw_ai=full_raw, mode=mode, file_name=file_name,
-                reasoning=full_reasoning or None
+                reasoning=full_reasoning or None, model_family=model_family
             )
         yield _sse('done', response=formatted, rawResponse=full_raw, id=new_id,
                    reasoning=full_reasoning or None)

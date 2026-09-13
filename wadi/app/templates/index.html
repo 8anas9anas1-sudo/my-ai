@@ -155,19 +155,22 @@
       </div>
     </div>
 
-    <div class="tools-wrap">
-      <button type="button" class="tools-btn" id="toolsBtn" onclick="toggleToolsPopup()" title="اختصارات سريعة">
-        <i class="fa-solid fa-plus"></i>
+    <div class="mode-selector-wrap">
+      <button type="button" class="mode-pill" id="modelFamilyPill" onclick="toggleModelFamilyDropdown()" title="عائلة الموديل">
+        <i class="fa-solid fa-server" id="modelFamilyPillIcon"></i>
+        <span id="modelFamilyPillLabel">Wadi 5.4</span>
+        <i class="fa-solid fa-chevron-down mode-pill-chevron"></i>
       </button>
-      <div class="tools-popup hidden" id="toolsPopup">
-        <button class="template-btn" onclick="useTemplate('لخصلي الملف');closeToolsPopup()"><i class="fa-solid fa-file-lines"></i> لخص</button>
-        <button class="template-btn" onclick="useTemplate('اكتبلي ايميل رسمي عن ');closeToolsPopup()"><i class="fa-solid fa-envelope"></i> ايميل</button>
-        <button class="template-btn" onclick="useTemplate('ترجم للعربية: ');closeToolsPopup()"><i class="fa-solid fa-language"></i> ترجم</button>
-        <button class="template-btn" onclick="useTemplate('اشرحلي بالتفصيل ');closeToolsPopup()"><i class="fa-solid fa-lightbulb"></i> شرح</button>
-        <div class="mode-dropdown-divider"></div>
-        <button class="template-btn" onclick="setMode('coder');useTemplate('اصنعلي مشروع Flask كامل: ');closeToolsPopup()"><i class="fa-solid fa-diagram-project"></i> مشروع كامل</button>
-        <button class="template-btn" onclick="setMode('coder');useTemplate('اكتبلي API بـ Flask يحتوي على ');closeToolsPopup()"><i class="fa-solid fa-gear"></i> API</button>
-        <button class="template-btn" onclick="setMode('coder');useTemplate('صلحلي هذا الكود:\n');closeToolsPopup()"><i class="fa-solid fa-bug-slash"></i> صلح Bug</button>
+      <div class="mode-dropdown hidden" id="modelFamilyDropdown">
+        <button class="mode-btn active" data-family="groq" onclick="setModelFamily('groq')">
+          <i class="fa-solid fa-server"></i> Wadi 5.4
+        </button>
+        <button class="mode-btn" data-family="meta" onclick="setModelFamily('meta')">
+          <i class="fa-solid fa-cloud"></i> Wadi 3.3
+        </button>
+        <p style="margin:6px 10px 2px;font-size:11px;color:var(--text-dim);line-height:1.6">
+          Wadi 3.3 لا يدعم البحث الحي أو تنفيذ الكود المدمجين
+        </p>
       </div>
     </div>
   </div>
@@ -291,6 +294,19 @@
     <div class="confirm-btns">
       <button class="confirm-btn-del" onclick="confirmDelete()">حذف</button>
       <button class="confirm-btn-cancel" onclick="document.getElementById('deleteModal').classList.remove('open')">إلغاء</button>
+    </div>
+  </div>
+</div>
+
+<!-- Quota switch modal (Groq → Meta family) -->
+<div class="modal" id="quotaSwitchModal" onclick="closeModalClick(event)">
+  <div class="confirm-modal-content">
+    <i class="fa-solid fa-arrows-rotate" style="font-size:36px;margin-bottom:12px;color:var(--accent1);display:block"></i>
+    <h3>تبديل تلقائي للنموذج</h3>
+    <p id="quotaSwitchMsg" style="text-align:right;line-height:1.9"></p>
+    <div class="confirm-btns">
+      <button class="confirm-btn-del" style="background:linear-gradient(135deg,#00ff94,#00d2ff);color:#000"
+              onclick="document.getElementById('quotaSwitchModal').classList.remove('open')">تمام، فهمت</button>
     </div>
   </div>
 </div>

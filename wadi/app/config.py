@@ -83,6 +83,23 @@ class Config:
     # حقيقي ومستقل تماماً عن qwen3.6-27b (لا نفس الموديل بس نعيد نفس
     # الطلب له — هذا ما كان سيفيد شيء لو المشكلة استقرار الموديل نفسه).
     GROQ_VISION_MODEL_FALLBACK = 'qwen/qwen3.8-27b'
+
+    # ─── عائلتا الموديل الظاهرتان للمستخدم — اختيار صريح لا تلقائي ────
+    # المستخدم يختار العائلة عند بدء محادثة جديدة (مثل اختيار موديل
+    # بكلود)، وتبقى مثبَّتة لعمر تلك المحادثة (راجع get_chat_locked_settings
+    # بـdb.py). label هو الاسم الودود المعروض بالواجهة فقط — لا علاقة
+    # له بأرقام إصدار Groq/Meta الحقيقية. 'groq' هي نفس سلسلة الاحتياط
+    # التلقائي المعتادة (Groq ← Groq احتياطي ← SambaNova ← Cerebras)؛
+    # 'meta' تروح *مباشرة* لعائلة SambaNova/Cerebras بلا أي محاولة على
+    # Groq إطلاقاً — احترام صريح لاختيار المستخدم، لا "احتياطي عن
+    # احتياطي". supports_tools=False لـ'meta' لأن البحث الحي وتنفيذ
+    # الكود المدمجين يعملان فقط مع نماذج gpt-oss عند Groq (راجع
+    # supports_builtin_tools بـai_service.py).
+    MODEL_FAMILIES = {
+        'groq': {'label': 'Wadi 5.4', 'supports_tools': True},
+        'meta': {'label': 'Wadi 3.3', 'supports_tools': False},
+    }
+    DEFAULT_MODEL_FAMILY = 'groq'
     GROQ_FALLBACK_MODEL = {
         'openai/gpt-oss-120b': 'openai/gpt-oss-20b',
     }
@@ -123,6 +140,38 @@ class Config:
     # نجاح الطلب لا استغلال كامل الطاقة الاستيعابية لموديل احتياطي
     # نادر الاستخدام أصلاً — رد مبتور أفضل بكثير من فشل الطلب بالكامل.
     SAMBANOVA_FALLBACK_MAX_TOKENS = 4096
+
+    # ─── مزوّد احتياطي ثانٍ (Cerebras) — سبتمبر 2026 ──────────────────
+    # لماذا مزوّد ثالث لا مجرد "اثنين كافيين": راجعنا حالة موثّقة فعلياً
+    # (dev.to/eleata) عن راوترات LLM بمزوّد احتياطي واحد فقط تنهار كلياً
+    # لو كلا المزوّدين ازدحما بنفس اللحظة (بالضبط ما حصل هنا فعلياً —
+    # Groq وSambaNova فشلا معاً لرسالة واحدة). خط ثالث يقلّل احتمال هذا
+    # التزامن كثيراً. معطّل تماماً افتراضياً (سلوك صفري لو ما ضبطت
+    # المفتاح) — فعّله بإضافة CEREBRAS_API_KEY فقط بمتغيرات بيئة Render،
+    # بدون أي تعديل كود إضافي (نفس نمط SAMBANOVA_API_KEY أعلاه تماماً).
+    #
+    # ⚠️ ملاحظة صدق مهمة: بحثت حالة Cerebras الحالية (سبتمبر 2026) ولقيت
+    # مصادر متضاربة فعلياً — أغلبها (يونيو-أغسطس 2026) يصفه كتير مجاني
+    # دائم بلا بطاقة (1M توكن/يوم على Llama 3.3 70B)، لكن هذا يعاكس
+    # ملاحظة سابقة بهذا الملف نفسه (أغسطس 2026) قالت إنه صار يتطلب بطاقة
+    # لتفعيل رصيد تجربة $5. المشهد يتغيّر بأسابيع — تحقق بنفسك عند
+    # cloud.cerebras.ai وقت التفعيل الفعلي قبل الاعتماد عليه بالكامل.
+    # الموديل ونقطة النهاية موثّقان رسمياً وواضحان بلا تضارب (inference-docs.cerebras.ai):
+    CEREBRAS_API_KEY = os.environ.get("CEREBRAS_API_KEY")
+    CEREBRAS_API_URL = "https://api.cerebras.ai/v1/chat/completions"
+    CEREBRAS_FALLBACK_MODEL = "llama-3.3-70b"
+    CEREBRAS_FALLBACK_MAX_TOKENS = 4096  # نفس منطق السقف المتحفظ لـSAMBANOVA_FALLBACK_MAX_TOKENS أعلاه
+
+    # ─── دائرة القطع (Circuit Breaker) لكل مزوّد — راجع app/provider_health.py ──
+    # بدل إعادة اكتشاف "هذا المزوّد مستنفد حالياً" من الصفر بكل رسالة
+    # (round-trip كامل + مهلة اتصال ضائعة)، نتذكر الفشل لفترة تصاعدية:
+    # أول فشل = PROVIDER_COOLDOWN_BASE_SECONDS، يتضاعف كل فشل متتالي حتى
+    # PROVIDER_COOLDOWN_MAX_SECONDS. مصدر الأرقام: نفس نطاق cooldown_time
+    # الافتراضي بأنظمة توجيه LLM إنتاجية حقيقية (LiteLLM/Bifrost) — راجع
+    # docs.litellm.ai/docs/routing وdocs.getbifrost.ai/enterprise/circuit-breaker.
+    PROVIDER_COOLDOWN_BASE_SECONDS = 20
+    PROVIDER_COOLDOWN_MAX_SECONDS = 600      # 10 دقائق — سقف حتى لو تكرر الفشل كثيراً
+    PROVIDER_AUTH_ERROR_COOLDOWN_SECONDS = 600  # 401/403 (مفتاح خاطئ) — تبريد ثابت طويل، لن يُصلَح نفسه بالانتظار
 
     # ─── أدوات مدمجة عند Groq (بحث ويب + تنفيذ كود) ─────────────────
     # هذي أدوات Groq نفسها ينفذها على سيرفراته (server-side) — بدون

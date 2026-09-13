@@ -5,6 +5,8 @@
 import io
 import re
 import json
+import time
+import random
 import hashlib
 import html as html_module
 from datetime import datetime, timezone, timedelta
@@ -15,6 +17,7 @@ import PyPDF2
 
 from app.config import Config
 from app.extensions import log
+from app import provider_health
 
 MODE_PROMPTS = {
 
@@ -522,79 +525,239 @@ def supports_builtin_tools(model):
     return bool(model) and model.startswith('openai/gpt-oss')
 
 
-# ─── البث الحي (Streaming) ──────────────────────────────────────
-def _stream_sambanova_fallback(messages, temperature, max_tokens):
+# ─── البث الحي (Streaming) عبر سلسلة مزوّدين مرتّبة ──────────────
+def _stream_openai_compatible(url, headers, payload, timeout=90):
     """
-    مولّد بث احتياطي من SambaNova (Llama 3.3 70B حقيقي) — يُستدعى فقط
-    من stream_chat_completion أدناه، وفقط بعد فشل Groq بكل نسخه (الموديل
-    الأساسي + GROQ_FALLBACK_MODEL الداخلي). نفس صيغة yield تماماً
-    (انظر توثيق stream_chat_completion) حتى يبقى المستدعي (routes/api.py)
-    بلا أي تغيير بمنطق معالجة الأحداث.
+    استدعاء بث SSE عام لأي مزوّد متوافق مع صيغة OpenAI — Groq وSambaNova
+    وCerebras الثلاثة يتكلمون نفس الصيغة بالضبط (chat/completions،
+    نفس شكل data: {...})، فمنطق تفسير الـstream واحد مشترك هنا بدل ما
+    يتكرر لكل مزوّد بنسخة شبه مطابقة (كان مكرراً حرفياً بين مسار Groq
+    ودالة SambaNova القديمة _stream_sambanova_fallback).
 
-    عمداً بدون tools ولا reasoning_effort — كلاهما خاص بصيغة gpt-oss/Harmony
-    عند Groq تحديداً، غير مفهوم لموديل Llama عادي هنا. يعني: لو Groq
-    استنفد فعلاً ووصلنا هذا المسار، رد هذه الرسالة بالذات لن يقدر يستخدم
-    browser_search/code_interpreter حتى لو النموذج ذكر إنه سيستخدمها
-    (system prompt مبني مسبقاً بافتراض توفرها) — حالة نادرة (فقط بعد
-    استنفاد Groq بالكامل) نقبلها بدل تعقيد تبني system prompt مختلف
-    حسب المزوّد الذي سيخدم الطلب فعلياً، غير معروف مسبقاً.
+    يrield tuples بصيغة (نوع, بيانات) — نفس صيغة stream_chat_completion
+    الموثقة أدناه (chunk/reasoning/tool_start/done)، بالإضافة لنوع داخلي
+    واحد لا يصل أبداً لـroutes/api.py:
+      ('provider_error', (status_code_أو_None, رسالة, retry_after_أو_None))
+        status_code=None يعني استثناء اتصال/مهلة (لا رد HTTP أصلاً).
     """
-    if not Config.SAMBANOVA_API_KEY:
-        yield ('error', 'الخدمة الاحتياطية غير مُفعّلة حالياً (SAMBANOVA_API_KEY غير مضبوط)')
-        return
     try:
-        resp = requests.post(
-            Config.SAMBANOVA_API_URL,
-            headers={"Authorization": f"Bearer {Config.SAMBANOVA_API_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": Config.SAMBANOVA_FALLBACK_MODEL,
-                "messages": messages,
-                "max_tokens": min(max_tokens, Config.SAMBANOVA_FALLBACK_MAX_TOKENS),
-                "temperature": temperature,
-                "stream": True,
-            },
-            stream=True, timeout=90
-        )
+        resp = requests.post(url, headers=headers, json=payload, stream=True, timeout=timeout)
         if not resp.ok:
             try:
                 err = resp.json()
             except Exception:
                 err = {}
-            yield ('error', err.get('error', {}).get('message', 'خطأ غير معروف من الخدمة الاحتياطية'))
+            message = err.get('error', {}).get('message', f'HTTP {resp.status_code}')
+            retry_after_raw = resp.headers.get('Retry-After')
+            try:
+                retry_after = float(retry_after_raw) if retry_after_raw else None
+            except ValueError:
+                retry_after = None
+            resp.close()
+            yield ('provider_error', (resp.status_code, message, retry_after))
             return
 
         full_text = ""
+        seen_tools = set()
         for line in resp.iter_lines():
             if not line:
                 continue
             decoded = line.decode('utf-8')
             if not decoded.startswith('data: '):
                 continue
-            payload = decoded[len('data: '):]
-            if payload.strip() == '[DONE]':
+            data_str = decoded[len('data: '):]
+            if data_str.strip() == '[DONE]':
                 break
             try:
-                chunk = json.loads(payload)
+                chunk = json.loads(data_str)
             except Exception:
                 continue
             delta = (chunk.get('choices') or [{}])[0].get('delta', {}) or {}
+
             content_piece = delta.get('content')
             if content_piece:
                 full_text += content_piece
                 yield ('chunk', content_piece)
+
+            reasoning_piece = delta.get('reasoning')
+            if reasoning_piece:
+                yield ('reasoning', reasoning_piece)
+
+            # بنية tool_calls بالبث قياسية بصيغة OpenAI: قطع فيها اسم
+            # الدالة جزئياً أو كاملاً — نلتقط أول ظهور لكل اسم فقط.
+            for tc in (delta.get('tool_calls') or []):
+                name = ((tc or {}).get('function') or {}).get('name')
+                if name and name not in seen_tools:
+                    seen_tools.add(name)
+                    yield ('tool_start', name)
         yield ('done', full_text)
 
     except requests.Timeout:
-        yield ('error', 'انتهت مهلة الاتصال بالخدمة الاحتياطية. حاول مجدداً.')
+        yield ('provider_error', (None, 'انتهت مهلة الاتصال', None))
     except Exception as e:
-        log.error(f"خطأ في الاتصال بالخدمة الاحتياطية (SambaNova): {e}")
-        yield ('error', f'خطأ في الاتصال بالخدمة الاحتياطية: {str(e)}')
+        yield ('provider_error', (None, str(e), None))
 
 
-def stream_chat_completion(model, messages, temperature, max_tokens, extra_params, fallback_model=None):
+def _try_provider(provider_id, url, headers, payload, timeout=90):
     """
-    مولّد Python يبث القطع (chunks) القادمة من Groq أولاً بأول (Server-Sent
-    Events)، بدل انتظار الرد كاملاً. يrield tuples بصيغة (نوع, بيانات):
+    محاولة "منطقية" واحدة على مزوّد واحد — قد تنطوي داخلياً على إعادة
+    محاولة فورية واحدة لو classify_error صنّف الفشل 'retry_once' (ازدحام
+    مؤقت، مثال فعلي: خطأ "high demand" اللي ظهر للمستخدم). يفحص دائرة
+    القطع (provider_health) *قبل* أي اتصال فعلي — لو المزوّد بفترة
+    تبريد من فشل سابق قريب، نتخطاه فوراً بلا إهدار round-trip.
+
+    يrield نفس أحداث _stream_openai_compatible القياسية (chunk/reasoning/
+    tool_start/done)، أو ('failed', retry_after_أو_None) لو استُنفدت كل
+    محاولات هذا المزوّد — المستدعي (stream_chat_completion) ينتقل حينها
+    للخطوة التالية بالسلسلة، وقد يستخدم retry_after لإخبار المستخدم متى
+    يُتوقَّع عودة الخدمة (راجع حدث 'quota_switch' هناك).
+
+    ضمان مهم: لا نعيد المحاولة أبداً لو وصل جزء من المحتوى فعلاً بهذه
+    المحاولة (got_chunk) — إعادة الإرسال ستكرر النص من البداية فوق ما
+    وصل المستخدم فعلاً، رد مكرر/مشوَّه بدل رد نظيف.
+    """
+    if not provider_health.is_available(provider_id):
+        wait = provider_health.seconds_until_available(provider_id)
+        log.error(f"⏭️ تخطي المزوّد '{provider_id}' — بفترة تبريد حالياً "
+                  f"(متاح خلال ~{wait} ثانية)")
+        yield ('failed', wait)
+        return
+
+    attempt = 0
+    while True:
+        attempt += 1
+        provider_error = None
+        got_chunk = False
+        for kind, data in _stream_openai_compatible(url, headers, payload, timeout):
+            if kind == 'provider_error':
+                provider_error = data
+                break
+            if kind == 'chunk':
+                got_chunk = True
+            yield (kind, data)
+            if kind == 'done':
+                provider_health.record_success(provider_id)
+                return
+
+        if provider_error is None:
+            # انتهى الـstream بدون 'provider_error' ولا 'done' صريح
+            # (نادر جداً) — نعامله كنجاح صامت بدل تعليق المستدعي للأبد.
+            provider_health.record_success(provider_id)
+            return
+
+        status_code, message, retry_after = provider_error
+        if status_code is None:
+            category, is_auth_error = 'skip', False  # مهلة/استثناء اتصال
+        else:
+            category, is_auth_error = provider_health.classify_error(status_code, message)
+
+        if category == 'retry_once' and attempt == 1 and not got_chunk:
+            delay = provider_health.compute_retry_delay(retry_after)
+            log.error(f"🔁 '{provider_id}' ازدحام مؤقت ({message}) — "
+                      f"إعادة محاولة واحدة فورية بعد {delay:.1f}ث")
+            time.sleep(delay)
+            continue
+
+        log.error(f"❌ '{provider_id}' فشل: {message}")
+        if status_code in provider_health.HEALTH_RELATED_STATUS_CODES or status_code is None:
+            # فقط أعطال "صحة المزوّد نفسه" تُفعّل دائرة القطع — خطأ 400
+            # (مثلاً) على الأغلب مشكلة بهذا الطلب تحديداً لا بالمزوّد،
+            # تفعيل تبريد بسببه قد يعطّل مزوّداً سليماً باحتمال طلب غريب.
+            provider_health.record_failure(
+                provider_id, retry_after_seconds=retry_after, long_cooldown=is_auth_error
+            )
+        yield ('failed', retry_after)
+        return
+
+
+def _build_provider_chain(model, fallback_model, extra_params, model_family='groq'):
+    """
+    يبني سلسلة المحاولات المرتّبة لرسالة واحدة.
+
+    model_family='groq' (الافتراضي — "Wadi 5.4" بالواجهة): Groq الأساسي
+    ← Groq احتياطي أخف ← SambaNova ← Cerebras، بالضبط كالسابق.
+    model_family='meta' ("Wadi 3.3" بالواجهة — اختيار المستخدم الصريح):
+    سلسلة عائلة Meta *فقط* (SambaNova ← Cerebras)، بلا أي محاولة على
+    Groq إطلاقاً — احترام صريح لاختيار المستخدم، Groq ليس "احتياطياً
+    خفياً عن احتياطي" هنا.
+
+    كل خطوة عنصر واحد بقائمة بدل شيفرة خاصة منفصلة لكل مزوّد، فيمكن
+    إضافة/حذف/إعادة ترتيب مزوّد بتعديل هذه الدالة فقط.
+
+    notify=True تُوضَع تلقائياً على أول خطوة "عائلة مختلفة عن Groq"
+    *فقط* لو بدأنا فعلاً بسلسلة Groq (model_family='groq') — تُستخدم
+    لإطلاق حدث 'quota_switch' مرة واحدة بالضبط عند أول انتقال حقيقي غير
+    متوقَّع من منظور المستخدم، بغض النظر عن أي مزوّد خارجي مضبوط فعلياً
+    (SambaNova أو Cerebras أياً كان أولهما متاحاً). خطوات لاحقة بنفس
+    العائلة (مثلاً Cerebras بعد فشل SambaNova) تبقى صامتة — تبديل داخلي
+    بنفس منطق احتياطي Groq الداخلي (120b→20b) تماماً، ليس حدثاً جديداً
+    يستاهل تنبيه المستخدم مرة ثانية. لو المستخدم اختار 'meta' صراحة من
+    البداية، لا notify إطلاقاً على أي خطوة — هذا لم يكن "احتياطياً"،
+    كان الاختيار المقصود بهذه المحادثة أصلاً.
+    """
+    chain = []
+
+    if model_family == 'groq':
+        chain.append({
+            'id': f'groq:{model}',
+            'url': Config.GROQ_API_URL,
+            'headers': {"Authorization": f"Bearer {Config.GROQ_API_KEY}", "Content-Type": "application/json"},
+            'payload_extra': {"model": model, "top_p": 0.92, **extra_params},
+            'family': 'groq',
+        })
+        if fallback_model:
+            chain.append({
+                'id': f'groq:{fallback_model}',
+                'url': Config.GROQ_API_URL,
+                'headers': {"Authorization": f"Bearer {Config.GROQ_API_KEY}", "Content-Type": "application/json"},
+                'payload_extra': {"model": fallback_model, "top_p": 0.92, **extra_params},
+                'family': 'groq',
+            })
+
+    # عائلة meta الصريحة تُبنى حتى لو ENABLE_CROSS_PROVIDER_FALLBACK=False
+    # بإعدادات الخادم (معطّلة أصلاً كـ"احتياطي تلقائي" لا كـ"اختيار
+    # مستخدم صريح") — اختيار المستخدم لهذه العائلة تحديداً أقوى من ذلك
+    # الإعداد العام. لو مفاتيحها غير مضبوطة أصلاً، السلسلة تُرجع فارغة
+    # والخطأ النهائي بـstream_chat_completion يوضّح ذلك بدل فشل صامت غريب.
+    if Config.ENABLE_CROSS_PROVIDER_FALLBACK or model_family == 'meta':
+        if Config.SAMBANOVA_API_KEY:
+            chain.append({
+                'id': 'sambanova',
+                'url': Config.SAMBANOVA_API_URL,
+                'headers': {"Authorization": f"Bearer {Config.SAMBANOVA_API_KEY}",
+                            "Content-Type": "application/json"},
+                'payload_extra': {"model": Config.SAMBANOVA_FALLBACK_MODEL},
+                'max_tokens_cap': Config.SAMBANOVA_FALLBACK_MAX_TOKENS,
+                'family': 'meta',
+            })
+        if Config.CEREBRAS_API_KEY:
+            chain.append({
+                'id': 'cerebras',
+                'url': Config.CEREBRAS_API_URL,
+                'headers': {"Authorization": f"Bearer {Config.CEREBRAS_API_KEY}",
+                            "Content-Type": "application/json"},
+                'payload_extra': {"model": Config.CEREBRAS_FALLBACK_MODEL},
+                'max_tokens_cap': Config.CEREBRAS_FALLBACK_MAX_TOKENS,
+                'family': 'meta',
+            })
+
+    for step in chain:
+        step['notify'] = False
+    if model_family == 'groq':
+        first_meta_step = next((s for s in chain if s['family'] == 'meta'), None)
+        if first_meta_step:
+            first_meta_step['notify'] = True
+
+    return chain
+
+
+def stream_chat_completion(model, messages, temperature, max_tokens, extra_params,
+                            fallback_model=None, model_family='groq'):
+    """
+    مولّد Python يبث القطع (chunks) القادمة من أول مزوّد متاح وناجح
+    بسلسلة مرتّبة (راجع _build_provider_chain أعلاه لتفاصيل ترتيبها
+    حسب model_family)، بدل انتظار الرد كاملاً. يrield tuples بصيغة
+    (نوع, بيانات):
       ('chunk', 'نص جزئي')      — جزء جديد من الرد النهائي (نص الإجابة نفسه)
       ('reasoning', 'نص جزئي')  — تفكير النموذج الداخلي أثناء التوليد؛
                                    نماذج gpt-oss تبعثه بحقل reasoning منفصل
@@ -606,100 +769,77 @@ def stream_chat_completion(model, messages, temperature, max_tokens, extra_param
       ('tool_start', 'اسم الأداة') — أول لحظة يبدأ فيها الموديل استخدام أداة
                                    مدمجة (browser_search / code_interpreter)
                                    — نبعثها مرة واحدة فقط لكل اسم أداة.
-      ('fallback_provider', 'sambanova') — تصل مرة واحدة فقط، فقط لو Groq
-                                   فشل بكل نسخه وانتقلنا فعلاً لمزوّد
-                                   احتياطي مختلف كلياً (انظر أدناه). نوع
-                                   غير معروف عند أي مستدعي قديم — يُتجاهل
-                                   بأمان بلا كسر شيء (routes/api.py الحالي
-                                   لا يتحقق من كل نوع صراحة قبل هذا التعديل).
-      ('error', 'رسالة الخطأ')
+      ('quota_switch', {'retry_after': ثوانٍ_أو_None}) — تصل مرة واحدة
+                                   بالضبط، فقط لو model_family='groq' وGroq
+                                   فشل بكل نسخه وانتقلنا فعلاً لعائلة Meta
+                                   الاحتياطية. retry_after من رأس Retry-After
+                                   الحقيقي اللي أرسله Groq مع آخر فشل (أدق
+                                   من أي تخمين ثابت) — None لو ما أرسله.
+                                   لا تصل إطلاقاً لو المستخدم اختار عائلة
+                                   Meta صراحة من البداية (لم يكن احتياطياً).
+      ('error', 'رسالة الخطأ')  — فقط لو *كل* خطوات السلسلة فشلت قبل أي
+                                   محتوى فعلي. رسالة عربية مصاغة جاهزة
+                                   للعرض مباشرة — لا نص خام من أي مزوّد
+                                   (التفاصيل التقنية الكاملة مسجَّلة بـ
+                                   log.error بكل خطوة فشلت، لمن يراجع
+                                   سجلات Render).
       ('done', 'النص الكامل')  — دائماً آخر عنصر يُرجَع (نص 'chunk' المجمّع فقط،
                                    لا يشمل reasoning)
 
-    عند فشل Groq بكل نسخه (429 أو أي خطأ آخر)، ولو ENABLE_CROSS_PROVIDER_FALLBACK
-    مفعّلة وSAMBANOVA_API_KEY موجود: ننتقل تلقائياً وبشفافية لـLlama 3.3 70B
-    حقيقي عبر SambaNova (مزوّد مختلف كلياً — سقف Groq اليومي/الدقيقي لا
-    يؤثر عليه إطلاقاً). راجع تعليق "مزوّد احتياطي" بـconfig.py لتفاصيل
-    لماذا SambaNova تحديداً. لو الاحتياطي معطّل أو غير مضبوط، السلوك
-    يبقى بالضبط كالسابق (خطأ Groq الأصلي يوصل للمستخدم كما هو).
+    ضمان ضد رد مشوَّه: لو خطوة انقطعت بمنتصف البث *بعد* إرسال محتوى
+    فعلي للمستخدم فعلاً (اتصال انقطع مثلاً)، لا ننتقل لخطوة/مزوّد آخر —
+    ذلك كان سينتج رداً بجزء من مصدر ومكمَّل من مصدر مختلف كلياً، غير
+    متماسك وربما متكرر. نتوقف بدل ذلك برد جزئي نظيف (أفضل من رد مشوَّه).
     """
-    def _stream(m):
-        return requests.post(
-            Config.GROQ_API_URL,
-            headers={"Authorization": f"Bearer {Config.GROQ_API_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": m, "messages": messages, "max_tokens": max_tokens,
-                "temperature": temperature, "top_p": 0.92, "stream": True,
-                **extra_params
-            },
-            stream=True, timeout=90
-        )
+    chain = _build_provider_chain(model, fallback_model, extra_params, model_family=model_family)
+    any_content_yielded = False
+    last_groq_retry_after = None
 
-    groq_error = None
-    try:
-        resp = _stream(model)
-        if resp.status_code == 429 and fallback_model:
-            resp.close()
-            resp = _stream(fallback_model)
+    for step in chain:
+        if step.get('notify'):
+            yield ('quota_switch', {'retry_after': last_groq_retry_after})
 
-        if not resp.ok:
-            try:
-                err = resp.json()
-            except Exception:
-                err = {}
-            groq_error = err.get('error', {}).get('message', 'خطأ غير معروف')
-        else:
-            full_text = ""
-            seen_tools = set()
-            for line in resp.iter_lines():
-                if not line:
-                    continue
-                decoded = line.decode('utf-8')
-                if not decoded.startswith('data: '):
-                    continue
-                payload = decoded[len('data: '):]
-                if payload.strip() == '[DONE]':
-                    break
-                try:
-                    chunk = json.loads(payload)
-                except Exception:
-                    continue
-                delta = (chunk.get('choices') or [{}])[0].get('delta', {}) or {}
+        step_max_tokens = min(max_tokens, step['max_tokens_cap']) if step.get('max_tokens_cap') else max_tokens
+        payload = {
+            "messages": messages, "max_tokens": step_max_tokens,
+            "temperature": temperature, "stream": True,
+            **step['payload_extra'],
+        }
 
-                content_piece = delta.get('content')
-                if content_piece:
-                    full_text += content_piece
-                    yield ('chunk', content_piece)
+        step_failed = False
+        step_retry_after = None
+        for kind, data in _try_provider(step['id'], step['url'], step['headers'], payload):
+            if kind == 'failed':
+                step_failed = True
+                step_retry_after = data
+                break
+            if kind == 'chunk':
+                any_content_yielded = True
+            yield (kind, data)
+            if kind == 'done':
+                return  # نجح فعلياً بهذه الخطوة — انتهى كل شيء
 
-                reasoning_piece = delta.get('reasoning')
-                if reasoning_piece:
-                    yield ('reasoning', reasoning_piece)
+        if step_failed:
+            if step.get('family') == 'groq':
+                last_groq_retry_after = step_retry_after
+            if any_content_yielded:
+                log.error(f"⚠️ '{step['id']}' انقطع بمنتصف البث بعد إرسال محتوى فعلي "
+                          f"— نوقف بدل التبديل لخطوة أخرى (يمنع رداً مخلوطاً من مصدرين)")
+                yield ('done', '')
+                return
+            continue  # جرّب الخطوة التالية بالسلسلة
 
-                # بنية tool_calls بالبث قياسية بصيغة OpenAI: قطع فيها اسم
-                # الدالة جزئياً أو كاملاً — نلتقط أول ظهور لكل اسم فقط.
-                for tc in (delta.get('tool_calls') or []):
-                    name = ((tc or {}).get('function') or {}).get('name')
-                    if name and name not in seen_tools:
-                        seen_tools.add(name)
-                        yield ('tool_start', name)
-            yield ('done', full_text)
-            return  # Groq نجح (بموديله الأساسي أو الداخلي) — انتهى، بدون أي احتياطي
-
-    except requests.Timeout:
-        groq_error = 'انتهت مهلة الاتصال. حاول مجدداً.'
-    except Exception as e:
-        log.error(f"خطأ في الاتصال ببث Groq: {e}")
-        groq_error = f'خطأ في الاتصال: {str(e)}'
-
-    # ما وصلنا هنا إلا لو Groq فشل فعلاً (بكل نسخه) — نجرب الاحتياطي
-    # المختلف كلياً بالمزوّد لو مفعّل ومفتاحه موجود، وإلا نرجع خطأ Groq
-    # الأصلي كما هو (بالضبط السلوك القديم لو الاحتياطي معطّل أو غير مضبوط).
-    if not (Config.ENABLE_CROSS_PROVIDER_FALLBACK and Config.SAMBANOVA_API_KEY):
-        yield ('error', groq_error)
-        return
-
-    yield ('fallback_provider', 'sambanova')
-    yield from _stream_sambanova_fallback(messages, temperature, max_tokens)
+    # كل خطوات السلسلة فشلت قبل أي محتوى فعلي — التفاصيل الكاملة مسجَّلة
+    # أعلاه بـlog.error لكل خطوة على حدة، هنا فقط رسالة عربية نهائية
+    # جاهزة للمستخدم بلا أي نص خام من أي مزوّد. رسالة مختلفة لعائلة meta
+    # الصريحة (Groq لم يُجرَّب إطلاقاً هنا، فذكر "الأساسي والاحتياطية"
+    # سيكون مضلِّلاً) — تقترح صراحة التبديل لـWadi 5.4 بمحادثة جديدة.
+    if model_family == 'groq':
+        yield ('error', '⚠️ كل مسارات الرد مزدحمة حالياً (الأساسي والاحتياطية). جرّب خلال دقيقة أو دقيقتين.')
+    else:
+        family_label = Config.MODEL_FAMILIES.get(model_family, {}).get('label', model_family)
+        yield ('error', f'⚠️ {family_label} مزدحم حالياً. جرّب خلال دقيقة أو دقيقتين، '
+                         f'أو ابدأ محادثة جديدة واختر Wadi 5.4.')
 
 
 def call_vision_model(messages):
