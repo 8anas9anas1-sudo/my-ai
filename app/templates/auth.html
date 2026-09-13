@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#050510">
+<title>Wadi — {{ title }}</title>
+<link rel="icon" type="image/png" href="{{ url_for('static', filename='images/logo.png') }}">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+</head>
+<body>
+<div class="stars" id="stars"></div>
+<div class="card">
+  <div class="logo"><img src="{{ url_for('static', filename='images/logo.png') }}" alt="Wadi" class="logo-img"> <span class="logo-text">Wadi</span></div>
+  <div class="subtitle">مساعد الذكاء الاصطناعي <i class="fa-solid fa-flag"></i></div>
+
+  <div class="tabs">
+    <button class="tab {% if mode == 'login' %}active{% endif %}"
+      onclick="location.href='/login'">
+      <i class="fa-solid fa-right-to-bracket"></i> دخول
+    </button>
+    <button class="tab {% if mode == 'register' %}active{% endif %}"
+      onclick="location.href='/register'">
+      <i class="fa-solid fa-user-plus"></i> حساب جديد
+    </button>
+  </div>
+
+  {% if error %}
+  <div class="error-msg"><i class="fa-solid fa-triangle-exclamation"></i> {{ error }}</div>
+  {% endif %}
+  {% if success %}
+  <div class="success-msg"><i class="fa-solid fa-circle-check"></i> {{ success }}</div>
+  {% endif %}
+
+  {% if mode == 'login' %}
+  <form class="form" method="POST" action="/login">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="input-group">
+      <i class="fa-solid fa-envelope"></i>
+      <input type="email" name="email" placeholder="البريد الإلكتروني" required autofocus>
+    </div>
+    <div class="input-group">
+      <i class="fa-solid fa-lock"></i>
+      <input type="password" name="password" placeholder="كلمة المرور" required>
+    </div>
+    <button type="submit" class="btn">
+      <i class="fa-solid fa-right-to-bracket"></i> دخول
+    </button>
+  </form>
+  <p style="text-align:center;margin-top:14px;font-size:12.5px;color:rgba(255,255,255,0.4)">
+    نسيت كلمة المرور؟ تواصل مع المسؤول ليولّد لك رابط استرداد
+  </p>
+  {% else %}
+  <form class="form" method="POST" action="/register">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="input-group">
+      <i class="fa-solid fa-user"></i>
+      <input type="text" name="name" placeholder="الاسم" required autofocus
+             value="{{ prefill_name or '' }}">
+    </div>
+    <div class="input-group">
+      <i class="fa-solid fa-envelope"></i>
+      <input type="email" name="email" placeholder="البريد الإلكتروني" required
+             value="{{ prefill_email or '' }}">
+    </div>
+    <div class="input-group">
+      <i class="fa-solid fa-lock"></i>
+      <input type="password" name="password" placeholder="كلمة المرور (6 أحرف على الأقل)" required minlength="6">
+    </div>
+    <button type="submit" class="btn">
+      <i class="fa-solid fa-user-plus"></i> إنشاء حساب
+    </button>
+  </form>
+  {% endif %}
+</div>
+
+<script src="{{ url_for('static', filename='js/auth.js') }}"></script>
+</body>
+</html>
