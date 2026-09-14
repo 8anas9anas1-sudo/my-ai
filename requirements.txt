@@ -27,6 +27,13 @@ pgvector==0.3.6
 
 cffi==1.16.0
 limits==4.1
+
+# بحث DuckDuckGo المباشر (بلا مفتاح) لعائلتي meta/oss — راجع تعليق
+# ENABLE_LIVE_GROUNDING_FOR_NON_GROQ بـ config.py وfetch_ddg_search_snippets
+# بـ ai_service.py. استخدمت الـparser المدمج ببايثون (html.parser) بدل
+# lxml عمداً — يتجنب تبعية C إضافية بالبناء، السرعة كافية لحجم استخدامنا.
+beautifulsoup4==4.12.3
+
 # python-dotenv مفعَّل فعلياً الآن (load_dotenv() بـwsgi.py) — كان مثبَّتاً
 # سابقاً بلا أي استدعاء فعلي، فتعليمة README (cp .env.example .env) ما
 # كانت تشتغل كما هي مكتوبة عند تشغيل python wsgi.py مباشرة.

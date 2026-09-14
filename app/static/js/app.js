@@ -33,6 +33,7 @@ async function init() {
   setMode(currentMode, false);
   setModelFamily(currentModelFamily, false);
   loadTheme();
+  applyMessageInputHintForDevice();
   renderChat();
   await loadDbChats();
 }
@@ -985,7 +986,31 @@ function loadTheme() {
   document.getElementById('sidebarThemeIcon').className = `fa-solid ${icon}`;
 }
 function handleKey(e) {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  if (e.key !== 'Enter' || e.shiftKey) return;
+  // بالجوال ما فيه Shift حقيقي غالباً (شاشة لمس بلا لوحة مفاتيح فعلية)،
+  // فلو أرسلنا مباشرة بمجرد Enter، ما يقدر المستخدم يعمل سطر جديد
+  // إطلاقاً بالجوال — بالضبط المشكلة المُبلَّغة. لذلك: بالأجهزة اللي
+  // مؤشرها الأساسي "خشن" (لمس) نخلي Enter يعمل سلوكه الافتراضي بالـ
+  // textarea (سطر جديد) ونعتمد فقط على زر الإرسال — نفس سلوك واتساب/
+  // تيليجرام/ChatGPT بالجوال. بالأجهزة اللي مؤشرها الأساسي "دقيق"
+  // (فأرة/تراك باد) يبقى السلوك القديم: Enter يرسل، Shift+Enter سطر جديد.
+  if (isPrimarilyTouchInput()) return;
+  e.preventDefault();
+  sendMessage();
+}
+// pointer:coarse بدل فحص وجود ontouchstart وحده عمداً: فحص "هل تقدر
+// تلمس الشاشة" فقط يكسر أجهزة مثل لابتوب بشاشة لمس + لوحة مفاتيح فعلية
+// (هذه عندها Shift حقيقي فعلاً وتستاهل سلوك سطح المكتب). pointer:coarse
+// يفحص نوع جهاز الإدخال *الأساسي* الفعلي بدل مجرد القدرة على اللمس.
+function isPrimarilyTouchInput() {
+  return !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+}
+function applyMessageInputHintForDevice() {
+  const inp = document.getElementById('messageInput');
+  if (!inp) return;
+  inp.placeholder = isPrimarilyTouchInput()
+    ? 'اكتب رسالتك...'
+    : 'اكتب رسالتك... (Enter للإرسال، Shift+Enter لسطر جديد)';
 }
 function autoResize(el) {
   el.style.height = '52px';

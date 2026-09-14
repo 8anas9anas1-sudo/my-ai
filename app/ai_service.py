@@ -14,6 +14,7 @@ from datetime import datetime, timezone, timedelta
 import requests
 import nh3
 import PyPDF2
+from bs4 import BeautifulSoup
 
 from app.config import Config
 from app.extensions import log
@@ -100,7 +101,6 @@ MODE_PROMPTS = {
 
 ## قبل ما تبني — خطّط وتحقق فعلياً:
 - لمشروع أو ميزة فيها تعقيد حقيقي: فكّر بالمعمارية أولاً (الملفات، العلاقات بينها، نقاط الفشل المحتملة) قبل كتابة أول سطر كود.
-- عندك أدوات بحث ويب وتنفيذ كود فعلية مدمجة — استخدمها فعلياً لا نظرياً: تحقق من نسخة مكتبة حديثة أو تغيّر بـAPI خارجي قبل الاعتماد عليه، وجرّب معادلة أو خوارزمية معقدة بتنفيذها فعلياً بدل افتراض أنها صحيحة.
 - لا تفترض — تحقق. الفرق بين مبرمج يخمّن ومبرمج يتحقق هو نفس الفرق بين كود يعمل بالصدفة وكود يعمل مضمون.
 
 ## قواعد الكود الذهبية — لا تنتهكها أبداً:
@@ -247,28 +247,74 @@ def _current_libya_datetime():
     return datetime.now(timezone(timedelta(hours=2)))
 
 
-def _current_date_context():
+def has_live_tools(model_family, mode='fast'):
+    """
+    مصدر الحقيقة الوحيد لسؤال "هل هذه المحادثة فعلاً عندها أدوات حية
+    (browser_search/code_interpreter) الآن؟" — يجب أن يتفق عليه موضعان
+    كانا سابقاً منفصلين تماماً: get_system_prompt أسفل (يقرر هل نُخبر
+    *الموديل نفسه* أن الأداة متاحة له) وroutes/api.py (يقرر هل تُرفق
+    الأداة *فعلياً* بطلب Groq). قبل هذا التعديل كان الشرط الأول مفقوداً
+    كلياً — كل عائلة موديل كانت تتلقى نفس الأمر "استخدم أداة
+    browser_search الحقيقية المتوفرة لك فوراً" بغض النظر عن model_family،
+    بينما الأداة نفسها تُرفق فعلياً فقط لعائلة 'groq' (Wadi 5.4). نتيجة
+    هذا الانفصال: أي موديل بعائلة 'meta' (Wadi 3.3) أو 'oss' (Wadi 2.1)
+    كان يُؤمَر صراحة أن يستخدم أداة بحث حقيقية وهو لا يملك أي أداة
+    إطلاقاً — فيلجأ إما لتلفيق نتيجة بحث وهمية بثقة تامة (تاريخ مختلق،
+    مصادر مختلقة)، أو لارتباك/خلط لغات أثناء "تمثيله" استخدام أداة غير
+    موجودة. هذا بالضبط ما ظهر بمقارنة GTA 6 بين النماذج الثلاثة.
+    كِلا الموضعين يستدعيان هذه الدالة الآن — لا يمكن أن ينفرط الاتفاق
+    بينهما بصمت مرة أخرى؛ أي تغيير مستقبلي (تعطيل ENABLE_BUILTIN_TOOLS،
+    أو موديل Groq جديد لا يدعم الأدوات) ينعكس تلقائياً بالمكانين معاً.
+    """
+    return (
+        model_family == 'groq'
+        and Config.ENABLE_BUILTIN_TOOLS
+        and supports_builtin_tools(Config.GROQ_MODELS.get(mode, Config.GROQ_MODELS['fast']))
+    )
+
+
+def _current_date_context(model_has_tools):
     """
     السبب الفعلي وراء "أنا متوقف عند 2024" اللي يقوله الموديل: ما كان
     فيه أي مكان بكل الكود يُخبره بالتاريخ الحقيقي الآن — فكان يفترض
     ضمنياً أن آخر شيء يعرفه من التدريب = "الآن". هذا المقطع يُضاف لكل
-    شخصية (عدا رد سؤال الهوية المضبوط حرفياً) ليصحح الافتراض، ويدفعه
-    يستخدم أداة browser_search الحقيقية المتوفرة له فعلياً بدل الاعتذار.
+    شخصية (عدا رد سؤال الهوية المضبوط حرفياً) ليصحح الافتراض.
+
+    model_has_tools (من has_live_tools أعلاه) يحدد أي فرع نص يُرسَل:
+    فقط الفرع الصادق فعلاً بحسب ما تملكه هذه المحادثة بالذات — لا نص
+    واحد موحّد يفترض بحثاً حياً للجميع بغض النظر عن العائلة.
     """
     now = _current_libya_datetime()
     weekday = _ARABIC_WEEKDAYS[now.weekday()]
     month = _ARABIC_MONTHS[now.month - 1]
-    return (
+    base = (
         f"\n\n---\n"
         f"معلومة سياقية إلزامية: التاريخ الحقيقي الآن هو يوم {weekday}، "
         f"{now.day} {month} {now.year} (توقيت ليبيا). معرفتك المخزَّنة من "
         f"التدريب متوقفة عند نقطة أقدم من هذا التاريخ بكثير — هذا طبيعي "
         f"لأي نموذج ذكاء اصطناعي، لكن لا تخلط أبداً بين \"آخر شيء أعرفه من "
-        f"تدريبي\" و\"الآن الحقيقي\". لأي سؤال عن أخبار، أحداث حالية، "
-        f"أسعار، إصدارات جديدة، أو أي شيء قد يكون تغيّر منذ ذلك — استخدم "
-        f"أداة browser_search الفعلية المتوفرة لديك فوراً بدل الاعتذار "
-        f"بعدم امتلاك بيانات حية؛ أنت تملكها فعلاً عبر هذه الأداة، فاستخدمها "
-        f"بدل الافتراض أو الاعتماد على الذاكرة القديمة."
+        f"تدريبي\" و\"الآن الحقيقي\"."
+    )
+    if model_has_tools:
+        return base + (
+            f" لأي سؤال عن أخبار، أحداث حالية، أسعار، إصدارات جديدة، أو أي "
+            f"شيء قد يكون تغيّر منذ ذلك — استخدم أداة browser_search الفعلية "
+            f"المتوفرة لديك فوراً بدل الاعتذار بعدم امتلاك بيانات حية؛ أنت "
+            f"تملكها فعلاً عبر هذه الأداة، فاستخدمها بدل الافتراض أو الاعتماد "
+            f"على الذاكرة القديمة."
+        )
+    return base + (
+        f" مهم جداً: في هذا الوضع بالذات لا تملك أي أداة بحث حي ولا أي "
+        f"اتصال فعلي بالإنترنت الآن — معلوماتك كلها فقط ما حفظته أثناء "
+        f"التدريب، ولا شيء غيره إطلاقاً. لأي سؤال عن أخبار، أحداث حالية، "
+        f"أسعار، تواريخ إصدار، أو أي شيء قد يكون تغيّر منذ تدريبك: **ممنوع "
+        f"عليك اختلاق تاريخ أو رقم أو مصدر أو اسم محدد بثقة تامة**، وممنوع "
+        f"عليك التظاهر بأنك بحثت أو تحققت من مصدر حقيقي — لو فعلت هذا "
+        f"ستعطي معلومة خاطئة بثقة كاذبة، وهذا أخطر من قول \"لا أعرف\". "
+        f"بدل ذلك: صرّح بوضوح أن معلوماتك قد تكون قديمة أو متغيّرة، أعطِ "
+        f"آخر ما تعرفه من تدريبك مع تنويه صريح بعدم اليقين، واقترح على "
+        f"المستخدم تجربة وضع \"Wadi 5.4\" (يملك بحثاً حياً حقيقياً) لو "
+        f"يحتاج إجابة مؤكدة ومحدثة الآن."
     )
 
 
@@ -290,11 +336,166 @@ _ANTI_OVERRIDE_NOTE = (
 )
 
 
-def get_system_prompt(mode, user_message):
+_CODER_TOOLS_CLAIM_LIVE = (
+    "\n\nعندك أدوات بحث ويب وتنفيذ كود فعلية مدمجة الآن بهذا الوضع تحديداً "
+    "— استخدمها فعلياً لا نظرياً: تحقق من نسخة مكتبة حديثة أو تغيّر بـAPI "
+    "خارجي قبل الاعتماد عليه، وجرّب معادلة أو خوارزمية معقدة بتنفيذها "
+    "فعلياً بدل افتراض أنها صحيحة."
+)
+_CODER_TOOLS_CLAIM_NONE = (
+    "\n\n⚠️ بهذا الوضع بالذات ما عندك أي أداة بحث ويب ولا تنفيذ كود فعلية "
+    "مدمجة — لا تدّعِ أبداً أنك جرّبت كوداً أو تحققت من نسخة مكتبة أو سلوك "
+    "API فعلياً، هذا كذب واضح. اعتمد على معرفتك المخزَّنة من التدريب فقط، "
+    "وصرّح بذلك صراحة لو سُئلت أو لو الإجابة تعتمد على نسخة/سلوك قد يكون "
+    "تغيّر منذ ذلك — لا تقدّم الافتراض بثقة تشبه ثقة شيء تم التحقق منه."
+)
+
+
+def get_system_prompt(mode, user_message, model_family='groq'):
     if is_identity_question(user_message):
         return ("أجب بالضبط: أنا Wadi، مساعد ذكاء اصطناعي طوّره المهندس "
                 "Anas Wadi من ليبيا. لا تضف أي معلومة أخرى.")
-    return MODE_PROMPTS.get(mode, MODE_PROMPTS['fast']) + _current_date_context() + _ANTI_OVERRIDE_NOTE
+    tools_now = has_live_tools(model_family, mode)
+    base = MODE_PROMPTS.get(mode, MODE_PROMPTS['fast'])
+    if mode == 'coder':
+        base += _CODER_TOOLS_CLAIM_LIVE if tools_now else _CODER_TOOLS_CLAIM_NONE
+    date_context = _current_date_context(tools_now)
+    return base + date_context + _ANTI_OVERRIDE_NOTE
+
+
+def is_time_sensitive_question(user_message):
+    """
+    كشف تقريبي (لا مثالي عمداً) لسؤال قد يحتاج معلومة محدّثة بعد تدريب
+    الموديل. يُستخدم فقط لتقرير هل نستدعي fetch_live_grounding_context
+    أدناه من routes/api.py (لعائلتي meta/oss فقط — عائلة groq عندها
+    browser_search حقيقي أصلاً فلا داعٍ لهذا الفحص معها). راجع
+    TIME_SENSITIVE_TRIGGERS بـconfig.py لتفاصيل قائمة الكلمات ولماذا لا
+    تحتاج دقة مثالية.
+    """
+    text = (user_message or '').strip().lower()
+    if not text:
+        return False
+    return any(re.search(p, text, re.IGNORECASE) for p in Config.TIME_SENSITIVE_TRIGGERS)
+
+
+def fetch_ddg_search_snippets(query, max_results=None, timeout=None):
+    """
+    الطبقة الأولى (والمقصودة كأساسية) لبحث meta/oss: صفحة نتائج
+    DuckDuckGo العادية (html.duckduckgo.com) عبر طلب HTTP مباشر — بلا
+    أي مفتاح API، بلا حساب، وبلا أي علاقة بـGroq إطلاقاً. هذا بالتحديد
+    ما طُلب هنا: مسار بحث لا ينهار لو Groq أوقف خطته المجانية (أو أي
+    جزء منها) يوماً — بالضبط نفس نوع المفاجأة الذي حصل فعلاً لـSambaNova
+    وCerebras (راجع تعليقاتهما فوق) وحتى لبعض موديلات Groq نفسها
+    (llama-3.1-8b-instant/llama-3.3-70b-versatile، أُلغيا 16 أغسطس 2026).
+
+    ⚠️ صدق كامل عن حدود هذا الأسلوب (بلا مبالغة تفاؤلية، بنفس منهج بقية
+    هذا الملف):
+      • لا اتفاقية استخدام رسمية ولا SLA من DuckDuckGo لهذه الصفحة —
+        قد تُغيّر بنية HTML الخاصة بها بلا إشعار (فئة CSS تتغيّر مثلاً)،
+        فينكسر الاستخراج هنا. هذا خطر "صيانة" (نص parsing قديم) لا خطر
+        "بطاقة دفع مفاجئة" — أهون بكثير وقابل للإصلاح بتعديل هذه الدالة
+        فقط، بلا أي تسجيل حساب جديد أو انتظار موافقة.
+      • حجم استخدام Wadi الفعلي (تطبيق عائلي بحصة يومية محدودة أصلاً
+        بـDAILY_MESSAGE_LIMIT) بعيد جداً عن الحجم الذي يستدعي حجباً
+        صارماً من DuckDuckGo عملياً.
+      • لو تعطّل هذا المسار لأي سبب، fetch_live_grounding_context أسفل
+        يرجع تلقائياً لطبقة Groq الاحتياطية، ثم لتحذير "لا تختلق" الصادق
+        النهائي بـ_current_date_context لو فشلت هي أيضاً — دفاع متعدد
+        الطبقات، لا اعتماد كامل على مصدر واحد.
+    """
+    max_results = max_results or Config.GROUNDING_MAX_RESULTS
+    timeout = timeout or Config.GROUNDING_TIMEOUT_SECONDS
+    try:
+        resp = requests.post(
+            Config.DDG_SEARCH_URL,
+            data={"q": query},
+            headers={"User-Agent": Config.GROUNDING_USER_AGENT},
+            timeout=timeout,
+        )
+        if not resp.ok:
+            return None
+        soup = BeautifulSoup(resp.text, "html.parser")
+        lines = []
+        for result in soup.select(".result")[:max_results]:
+            title_el = result.select_one(".result__title")
+            snippet_el = result.select_one(".result__snippet")
+            # " " كفاصل إلزامي هنا: DuckDuckGo يلف الكلمات المطابقة
+            # للبحث بوسوم <b> داخل العنوان/المقتطف، وget_text بلا فاصل
+            # يلصق النص المحيط بها ببعضه بلا مسافة (مثال حقيقي رأيته
+            # أثناء الاختبار: "forNovember 19, 2026" بدل "for November
+            # 19, 2026") — خطأ يشبه بالضبط مشكلة الخلط اللغوي الأصلية.
+            title = re.sub(r'\s+', ' ', title_el.get_text(" ", strip=True)) if title_el else ""
+            snippet = re.sub(r'\s+', ' ', snippet_el.get_text(" ", strip=True)) if snippet_el else ""
+            piece = f"{title}: {snippet}" if title and snippet else (title or snippet)
+            if piece:
+                lines.append(f"- {piece}")
+        return "\n".join(lines) if lines else None
+    except Exception as e:
+        log.error(f"تعذر بحث DuckDuckGo المباشر بلا مفتاح (تم تجاهله بأمان): {e}")
+        return None
+
+
+def fetch_live_grounding_context(user_message):
+    """
+    يمنح عائلتي meta/oss (Wadi 3.3 / Wadi 2.1) سياقاً واقعياً محدّثاً
+    رغم عدم امتلاكهما أي أداة بحث خاصة بهما — عبر سلسلة طبقات مرتّبة
+    بالضبط بنفس فلسفة _build_provider_chain (أضعف اعتماداً أولاً):
+
+      الطبقة 1 — fetch_ddg_search_snippets فوق: بحث حقيقي بلا مفتاح
+      وبلا أي علاقة بـGroq. هذا المسار الأساسي المقصود فعلياً.
+
+      الطبقة 2 (احتياطي فقط لو فشلت الطبقة 1 تماماً — لا تُستدعى إطلاقاً
+      لو نجحت): "استعارة" بحث Groq نفسه (browser_search). هذا لا يُحسب
+      "مفتاحاً جديداً" — GROQ_API_KEY مطلوب أصلاً لتشغيل كامل التطبيق
+      (راجع أول سطر بدالة chat() بـroutes/api.py: بدونه لا يعمل أي رد
+      إطلاقاً بأي عائلة)، فإعادة استخدامه هنا كطبقة ثانية إضافة تأمين
+      بلا أي تكلفة أو تبعية جديدة فعلية — فقط لا يجوز أن يكون الطبقة
+      الوحيدة أو الأولى (كان هذا خطأ التصميم بالنسخة الأولى من هذه
+      الميزة، صُحِّح هنا).
+
+    فشل الطبقتين معاً يرجع None بهدوء تام — المستخدم يبقى محمياً بتحذير
+    "لا تختلق" الصادق بـ_current_date_context بغض النظر عن نتيجة أي
+    طبقة هنا.
+    """
+    snippets = fetch_ddg_search_snippets(user_message)
+    if snippets:
+        return snippets[:Config.GROUNDING_MAX_CONTEXT_CHARS]
+
+    # الطبقة 2 — فقط لو فشلت DuckDuckGo تماماً (رد فارغ/حجب/خطأ شبكة)
+    if not Config.GROQ_API_KEY:
+        return None
+    try:
+        resp = requests.post(
+            Config.GROQ_API_URL,
+            headers={"Authorization": f"Bearer {Config.GROQ_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": Config.GROUNDING_MODEL,
+                "messages": [
+                    {"role": "system", "content": (
+                        "ابحث الآن فعلياً عبر أداة browser_search عن إجابة "
+                        "دقيقة ومحدّثة لسؤال المستخدم التالي، ثم لخّص أهم "
+                        "حقيقة/تاريخ/رقم وجدته بجملتين إلى ثلاث كحد أقصى، "
+                        "بالعربية، بلا مقدمات ولا اعتذار — فقط الحقيقة. لو "
+                        "لم تجد شيئاً واضحاً بالبحث، قل ذلك صراحة بجملة واحدة "
+                        "بدل تخمين أي تفصيل."
+                    )},
+                    {"role": "user", "content": user_message}
+                ],
+                "tools": Config.GROUNDING_TOOLS,
+                "tool_choice": "auto",
+                "max_tokens": 300,
+                "temperature": 0.2,
+            },
+            timeout=Config.GROUNDING_TIMEOUT_SECONDS,
+        )
+        if not resp.ok:
+            return None
+        result = resp.json()
+        content = (result.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+        return content[:Config.GROUNDING_MAX_CONTEXT_CHARS] if content else None
+    except Exception as e:
+        log.error(f"تعذر جلب سياق البحث الحي (طبقة Groq الاحتياطية، تم تجاهله بأمان): {e}")
+        return None
 
 
 def is_image_generation_request(user_message, has_file=False):
