@@ -717,6 +717,21 @@ def extract_pdf_text(pdf_file):
         return f"خطأ في قراءة PDF: {str(e)}"
 
 
+def extract_code_file_text(file_bytes):
+    """
+    يقرأ ملف كود/نص مرفوع بوضع المبرمج كنص خام كامل — لا استخراج ولا
+    تلخيص متل PDF، فقط فك ترميز آمن. UTF-8 أولاً (الغالبية العظمى من
+    ملفات الكود)، ثم errors='replace' بدل رفض الملف بالكامل لو كان
+    بترميز آخر غير معروف بدقة (أفضل من رفض المستخدم كلياً). السقف هنا
+    أصغر من PDF (15000) لأن كل النص يدخل سياق الموديل كما هو بلا تلخيص.
+    """
+    try:
+        text = file_bytes.decode('utf-8')
+    except UnicodeDecodeError:
+        text = file_bytes.decode('utf-8', errors='replace')
+    return text[:12000]
+
+
 def supports_builtin_tools(model):
     """
     أدوات Groq المدمجة (browser_search / code_interpreter) مدعومة حالياً

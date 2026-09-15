@@ -12,7 +12,18 @@ let currentChatId = localStorage.getItem('currentChatId') || Date.now().toString
 let wasVoiceInput = false;
 let chats = {};
 let dbChats = [];
-let currentFile = null;
+// مرفقات الرسالة القادمة — إما حتى MAX_ATTACH_IMAGES صور (مع معاينة
+// مصغّرة فعلية لكل واحدة) أو ملف PDF/كود واحد. currentFilePreviewUrls
+// مصفوفة موازية بنفس الفهرسة: رابط blob: للصور، null لغير الصور.
+let currentFiles = [];
+let currentFilePreviewUrls = [];
+const MAX_ATTACH_IMAGES = 5;
+// صيغ إضافية تُقبَل بخانة الرفع فقط بوضع "المبرمج" (انظر setMode
+// أدناه) — نفس القائمة منطقياً بجانب Config.ALLOWED_CODE_EXTENSIONS
+// بـconfig.py؛ هذه هنا مجرد تلميح UX لخانة <input accept>، والتحقق
+// الفعلي والملزم يبقى بالخادم دائماً.
+const CODER_FILE_ACCEPT_EXTRA = '.js,.jsx,.ts,.tsx,.py,.java,.c,.h,.cpp,.hpp,.cs,.go,.rs,.rb,.php,.swift,.kt,.kts,.sql,.sh,.bash,.yaml,.yml,.json,.xml,.toml,.ini,.cfg,.conf,.env,.md,.txt,.css,.scss,.sass,.less,.html,.htm,.vue,.svelte,.dart,.lua,.r,.pl,.gradle';
+const BASE_FILE_ACCEPT = 'image/*,.pdf';
 let currentMode = localStorage.getItem('mode') || 'fast';
 let currentModelFamily = localStorage.getItem('modelFamily') || 'groq';
 // إعدادات مثبَّتة فعلياً (من أول رسالة) لكل محادثة عندها رسائل — يُقرأ
@@ -128,6 +139,11 @@ function setMode(m, save = true) {
   // تُطابق بالخطأ أي selector بقيمة فارغة.
   if (m === 'coder') document.body.setAttribute('data-app-mode', 'coder');
   else document.body.removeAttribute('data-app-mode');
+
+  // خانة الرفع تقبل ملفات كود/نص حقيقية بوضع المبرمج فقط — الصور
+  // وPDF مسموحان بكل الأوضاع دائماً (انظر BASE_FILE_ACCEPT أعلاه).
+  const fileInput = document.getElementById('fileInput');
+  if (fileInput) fileInput.accept = m === 'coder' ? `${BASE_FILE_ACCEPT},${CODER_FILE_ACCEPT_EXTRA}` : BASE_FILE_ACCEPT;
 
   const meta = MODE_META[m] || MODE_META.fast;
   const pillIcon = document.getElementById('modePillIcon');
@@ -329,7 +345,7 @@ async function loadChatFromDb(chatId) {
     chats[chatId] = messages.map(m => ({
       id: m.id, user: m.user_message, ai: m.ai_response,
       rawAi: m.raw_ai, imageUrl: m.image_url, fileName: m.file_name,
-      userImageUrl: m.uploaded_image_url, reasoning: m.reasoning || ''
+      userImageUrls: m.uploaded_image_urls, reasoning: m.reasoning || ''
     }));
     // نثبّت الوضع/عائلة الموديل المستخدَمين فعلياً بأول رسالة — تُستخدم
     // لعرض الزرّين الصحيحين وقفلهما عند فتح محادثة قديمة (mode/model_family
@@ -389,7 +405,7 @@ function renderChat() {
         <div class="welcome-card" onclick="useTemplate('ارسم صورة: ')"><div class="card-icon"><i class="fa-solid fa-palette"></i></div><div class="card-title">رسم صورة</div><div class="card-desc">توليد صور فائقة الجودة</div></div>
         <div class="welcome-card" onclick="useTemplate('اشرحلي ')"><div class="card-icon"><i class="fa-solid fa-lightbulb"></i></div><div class="card-title">شرح وتحليل</div><div class="card-desc">أشرح أي موضوع تريده</div></div>
         <div class="welcome-card" onclick="setMode('coder');useTemplate('اصنعلي مشروع ')"><div class="card-icon"><i class="fa-solid fa-code"></i></div><div class="card-title">مشروع كامل</div><div class="card-desc">موقع، API، بوت — جاهز للتشغيل</div></div>
-        <div class="welcome-card" onclick="document.getElementById('fileInput').click()"><div class="card-icon"><i class="fa-solid fa-file-lines"></i></div><div class="card-title">تحليل ملف</div><div class="card-desc">PDF أو صورة</div></div>
+        <div class="welcome-card" onclick="document.getElementById('fileInput').click()"><div class="card-icon"><i class="fa-solid fa-file-lines"></i></div><div class="card-title">تحليل ملف</div><div class="card-desc">PDF أو حتى 5 صور دفعة واحدة</div></div>
       </div>
     </div>`;
     return;
@@ -399,7 +415,13 @@ function renderChat() {
     const isTyping = m.ai === '__typing__';
     let userContent = escHtml(m.user);
     if (m.fileName) userContent = `<div class="file-badge"><i class="fa-solid fa-file"></i> ${escHtml(m.fileName)}</div><br>${userContent}`;
-    if (m.userImageUrl) userContent += `<br><img class="generated-img" src="${escHtml(m.userImageUrl)}" alt="الصورة المرفوعة" loading="lazy" onclick="window.open(this.src,'_blank')">`;
+    if (m.userImageUrls && m.userImageUrls.length === 1) {
+      userContent += `<br><img class="generated-img" src="${escHtml(m.userImageUrls[0])}" alt="الصورة المرفوعة" loading="lazy" onclick="window.open(this.src,'_blank')">`;
+    } else if (m.userImageUrls && m.userImageUrls.length > 1) {
+      userContent += `<div class="user-images-grid">${m.userImageUrls.map(u =>
+        `<img class="generated-img" src="${escHtml(u)}" alt="صورة مرفوعة" loading="lazy" onclick="window.open(this.src,'_blank')">`
+      ).join('')}</div>`;
+    }
     let aiContent = isTyping
       ? `<div class="typing-indicator"><span></span><span></span><span></span></div>`
       : (m.ai || '');
@@ -513,6 +535,22 @@ function updateStatusIndicator(index, label) {
   const el = document.getElementById('msg-' + index);
   if (el) {
     el.innerHTML = `<div class="status-indicator"><img class="status-icon" src="/static/images/logo.png" alt="">${escHtml(label)}</div>`;
+    window.scrollTo(0, document.body.scrollHeight);
+  }
+}
+
+// يستبدل نقاط الكتابة بمؤشر "جاري رسم الصورة" فور استلام حدث
+// image_generating (يصل فوراً من الخادم قبل استدعاء توليد الصورة
+// الفعلي، الذي يأخذ ثواني — انظر التعليق بـroutes/api.py) — مربّع
+// بلمعة متحركة بمكان الصورة القادمة تماماً بدل بقاء الفقاعة جامدة.
+function updateImageGeneratingIndicator(index) {
+  const el = document.getElementById('msg-' + index);
+  if (el) {
+    el.innerHTML = `
+      <div class="image-generating">
+        <div class="image-generating-frame"><i class="fa-solid fa-palette"></i></div>
+        <span class="image-generating-label"><img class="status-icon" src="/static/images/logo.png" alt="">جاري رسم الصورة...</span>
+      </div>`;
     window.scrollTo(0, document.body.scrollHeight);
   }
 }
@@ -718,7 +756,7 @@ function escHtml(t) {
 // ─── Streaming (SSE عبر fetch) ─────────────────────────────────
 // نتعامل مع البث عبر fetch + ReadableStream بدل EventSource، لأن
 // EventSource يدعم GET فقط ولا يسمح بإرسال FormData/ملفات.
-async function streamChat(fd, { onFirstChunk, onChunk, onReasoning, onToolStart, onQuotaSwitch, onDone, onError } = {}) {
+async function streamChat(fd, { onFirstChunk, onChunk, onReasoning, onToolStart, onImageGenerating, onQuotaSwitch, onDone, onError } = {}) {
   let r;
   try {
     r = await fetch('/api/chat', { method: 'POST', headers: { 'X-CSRFToken': CSRF_TOKEN }, body: fd });
@@ -756,6 +794,8 @@ async function streamChat(fd, { onFirstChunk, onChunk, onReasoning, onToolStart,
         onReasoning && onReasoning(evt.content);
       } else if (evt.type === 'tool_start') {
         onToolStart && onToolStart(evt.tool);
+      } else if (evt.type === 'image_generating') {
+        onImageGenerating && onImageGenerating();
       } else if (evt.type === 'quota_switch') {
         onQuotaSwitch && onQuotaSwitch(evt.retryAfter);
       } else if (evt.type === 'error') {
@@ -772,7 +812,7 @@ async function sendMessage() {
   if (isSending) return;
   const inp = document.getElementById('messageInput');
   const t = inp.value.trim();
-  if (!t && !currentFile) return;
+  if (!t && !currentFiles.length) return;
   isSending = true;
   // يُلتقط هنا بالضبط — لحظة الإرسال الفعلية، لا أي وقت لاحق — حتى
   // نربط "التشغيل التلقائي" بنفس الرسالة اللي جاءت فعلاً من الصوت.
@@ -782,12 +822,17 @@ async function sendMessage() {
   inp.value = ''; inp.style.height = '52px';
   if (!chats[currentChatId]) chats[currentChatId] = [];
   const c = chats[currentChatId];
-  const fName = currentFile ? currentFile.name : null;
-  // معاينة فورية محلية (blob URL) للصورة المرفوعة قبل اكتمال الرفع
-  // للتخزين الدائم — تُستبدل بالرابط الدائم بمجرد وصول رد الخادم.
-  const isImageFile = currentFile && currentFile.type && currentFile.type.startsWith('image/');
-  const localPreviewUrl = isImageFile ? URL.createObjectURL(currentFile) : null;
-  c.push({ user: t || 'حلل الملف', ai: '__typing__', fileName: fName, userImageUrl: localPreviewUrl });
+  // ملف PDF/كود واحد يُعرَض كشارة اسم ملف؛ عدّة صور تُعرَض كشبكة
+  // مصغّرات بدلاً منها (renderChat يفرّق حسب userImageUrls).
+  const isSingleNonImage = currentFiles.length === 1 && !(currentFiles[0].type || '').startsWith('image/');
+  const fName = isSingleNonImage ? currentFiles[0].name : null;
+  // معاينة فورية محلية (روابط blob: المُنشأة مسبقاً بلحظة الاختيار —
+  // انظر handleFile) لكل صورة مرفوعة قبل اكتمال الرفع للتخزين الدائم؛
+  // تُستبدل بالروابط الدائمة بمجرد وصول رد الخادم.
+  const localPreviewUrls = currentFiles
+    .map((f, idx) => ((f.type || '').startsWith('image/') ? currentFilePreviewUrls[idx] : null))
+    .filter(Boolean);
+  c.push({ user: t || 'حلل الملف', ai: '__typing__', fileName: fName, userImageUrls: localPreviewUrls });
   const msgIndex = c.length - 1;
   // أول رسالة بهذه المحادثة — الوضع وعائلة الموديل المختاران الآن
   // يُثبَّتان لعمرها كاملاً (راجع updatePickerLocks أعلاه وget_chat_locked_settings
@@ -805,7 +850,7 @@ async function sendMessage() {
   fd.append('mode', currentMode);
   fd.append('model_family', currentModelFamily);
   fd.append('chat_id', currentChatId);
-  if (currentFile) fd.append('file', currentFile);
+  currentFiles.forEach(f => fd.append('files', f));
 
   try {
     await streamChat(fd, {
@@ -816,6 +861,10 @@ async function sendMessage() {
       onToolStart: (tool) => {
         if (c[msgIndex].ai === '__typing__') updateStatusIndicator(msgIndex, TOOL_STATUS_LABELS[tool] || 'يعمل...');
       },
+      // نفس فكرة onReasoning/onToolStart لكن لتوليد الصورة تحديداً —
+      // يستبدل نقاط الكتابة بمؤشر "جاري رسم الصورة" المرئي بدل ما تفضل
+      // الفقاعة جامدة طول مدة التوليد الفعلي (انظر updateImageGeneratingIndicator).
+      onImageGenerating: () => { if (c[msgIndex].ai === '__typing__') updateImageGeneratingIndicator(msgIndex); },
       onQuotaSwitch: (retryAfter) => showQuotaSwitchModal(retryAfter),
       onFirstChunk: () => { c[msgIndex].ai = ''; },
       onChunk: (rawAccum) => { c[msgIndex].ai = rawAccum; updateStreamingContent(msgIndex, rawAccum); },
@@ -826,9 +875,9 @@ async function sendMessage() {
         c[msgIndex].reasoning = evt.reasoning || '';
         c[msgIndex].id = evt.id;
         if (evt.imageUrl) c[msgIndex].imageUrl = evt.imageUrl;
-        // الرابط الدائم من التخزين يستبدل المعاينة المؤقتة (لو التخزين
+        // الروابط الدائمة من التخزين تستبدل المعاينة المؤقتة (لو التخزين
         // غير مفعّل بالخادم، تبقى المعاينة المحلية لهذه الجلسة فقط)
-        if (evt.uploadedImageUrl) c[msgIndex].userImageUrl = evt.uploadedImageUrl;
+        if (evt.uploadedImageUrls && evt.uploadedImageUrls.length) c[msgIndex].userImageUrls = evt.uploadedImageUrls;
         saveChats(); renderChat();
         loadDbChats();
         // تشغيل تلقائي: لو السؤال جاء بالصوت، الرد يتكلم لوحده بلا ما
@@ -870,9 +919,17 @@ async function sendMessage() {
       c[msgIndex].sanitized = true;
       renderChat();
     }
-    if (localPreviewUrl) URL.revokeObjectURL(localPreviewUrl);
-    currentFile = null;
-    document.getElementById('filePreview').classList.add('hidden');
+    // لا نُلغي رابط blob: لو لا يزال هو نفسه المعروض فعلياً بالرسالة
+    // المحفوظة (يعني التخزين الدائم بالخادم غير مفعّل، أو فشل الرفع،
+    // ولم يصل رابط دائم بديل من onDone) — إلغاؤه هنا كان يكسر الصورة
+    // صامتاً عند إعادة بناء الرسالة لاحقاً (تبديل محادثة ثم رجوع، حيث
+    // renderChat يعيد إنشاء عنصر <img> من جديد بنفس الرابط الملغى)،
+    // رغم أن التعليق الأصلي بأعلى الدالة يعد ببقائها معروضة لهذه الجلسة.
+    const keepUrls = new Set(c[msgIndex] ? (c[msgIndex].userImageUrls || []) : []);
+    currentFilePreviewUrls.forEach(u => { if (u && !keepUrls.has(u)) URL.revokeObjectURL(u); });
+    currentFiles = [];
+    currentFilePreviewUrls = [];
+    renderFilePreview();
     document.getElementById('fileInput').value = '';
     saveChats();
     isSending = false;
@@ -900,6 +957,7 @@ async function regenerate(i) {
       onToolStart: (tool) => {
         if (c[i].ai === '__typing__') updateStatusIndicator(i, TOOL_STATUS_LABELS[tool] || 'يعمل...');
       },
+      onImageGenerating: () => { if (c[i].ai === '__typing__') updateImageGeneratingIndicator(i); },
       onQuotaSwitch: (retryAfter) => showQuotaSwitchModal(retryAfter),
       onFirstChunk: () => { c[i].ai = ''; },
       onChunk: (rawAccum) => { c[i].ai = rawAccum; updateStreamingContent(i, rawAccum); },
@@ -930,17 +988,80 @@ async function regenerate(i) {
 }
 
 // ─── File ─────────────────────────────────────────────────────
+// المرفقات: حتى MAX_ATTACH_IMAGES صور برسالة واحدة (بمعاينة مصغّرة
+// حقيقية لكل واحدة)، أو ملف PDF/كود واحد يستبدل أي مرفق سابق. لا
+// نعتمد على fileInput.files بعد الاختيار الأول — currentFiles نفسها
+// مصدر الحقيقة، فحذف صورة مفردة (removeFileAt) بسيط بلا حاجة لإعادة
+// بناء FileList (غير قابلة للتعديل مباشرة أصلاً بمعظم المتصفحات).
 function handleFile(inp) {
-  if (inp.files[0]) {
-    currentFile = inp.files[0];
-    document.getElementById('fileName').textContent = currentFile.name;
-    document.getElementById('filePreview').classList.remove('hidden');
+  const selected = Array.from(inp.files || []);
+  inp.value = ''; // نفرّغ فوراً حتى يعمل اختيار نفس الملف مرة ثانية لاحقاً
+  if (!selected.length) return;
+  const allImages = selected.every(f => f.type && f.type.startsWith('image/'));
+  if (selected.length > 1 && !allImages) {
+    showToast('يمكن اختيار أكثر من ملف واحد فقط لو كانت كلها صوراً', 'error');
+    return;
   }
+  if (allImages) {
+    if ((currentFiles.length + selected.length) > MAX_ATTACH_IMAGES) {
+      showToast(`يمكن رفع ${MAX_ATTACH_IMAGES} صور كحد أقصى بالرسالة الواحدة`, 'error');
+      return;
+    }
+    // لو كان هناك ملف غير صورة مرفقاً من قبل (PDF/كود)، الصور الجديدة تستبدله.
+    if (currentFiles.length && !(currentFiles[0].type || '').startsWith('image/')) clearFilePreviews();
+    selected.forEach(f => {
+      currentFiles.push(f);
+      currentFilePreviewUrls.push(URL.createObjectURL(f));
+    });
+  } else {
+    // ملف PDF أو ملف كود واحد — يستبدل أي مرفق سابق (لا يُخلط مع صور).
+    clearFilePreviews();
+    currentFiles = [selected[0]];
+    currentFilePreviewUrls = [null];
+  }
+  renderFilePreview();
 }
-function removeFile() {
-  currentFile = null;
-  document.getElementById('fileInput').value = '';
-  document.getElementById('filePreview').classList.add('hidden');
+
+function removeFileAt(i) {
+  if (currentFilePreviewUrls[i]) URL.revokeObjectURL(currentFilePreviewUrls[i]);
+  currentFiles.splice(i, 1);
+  currentFilePreviewUrls.splice(i, 1);
+  renderFilePreview();
+}
+
+function clearFilePreviews() {
+  currentFilePreviewUrls.forEach(u => u && URL.revokeObjectURL(u));
+  currentFiles = [];
+  currentFilePreviewUrls = [];
+}
+
+function clearAllFiles() {
+  clearFilePreviews();
+  renderFilePreview();
+}
+
+// يبني شريط المعاينة الاحترافي: صورة مصغّرة فعلية لكل صورة (لا اسم
+// ملف نصي فقط)، أو مربّع أيقونة لملف PDF/كود مع امتداده — كل واحد
+// بزر إزالة خاص فوقه.
+function renderFilePreview() {
+  const wrap = document.getElementById('filePreview');
+  const thumbs = document.getElementById('attachThumbs');
+  if (!currentFiles.length) { wrap.classList.add('hidden'); thumbs.innerHTML = ''; return; }
+  thumbs.innerHTML = currentFiles.map((f, i) => {
+    const isImg = f.type && f.type.startsWith('image/');
+    if (isImg) {
+      return `<div class="attach-thumb"><img src="${currentFilePreviewUrls[i]}" alt="">
+        <button type="button" class="attach-remove" onclick="removeFileAt(${i})" title="إزالة"><i class="fa-solid fa-xmark"></i></button>
+      </div>`;
+    }
+    const ext = (f.name.split('.').pop() || '').toLowerCase();
+    const icon = ext === 'pdf' ? 'fa-file-pdf' : 'fa-file-code';
+    return `<div class="attach-thumb attach-thumb-file" title="${escHtml(f.name)}">
+      <i class="fa-solid ${icon}"></i><span>${escHtml(ext ? '.' + ext : 'ملف')}</span>
+      <button type="button" class="attach-remove" onclick="removeFileAt(${i})" title="إزالة"><i class="fa-solid fa-xmark"></i></button>
+    </div>`;
+  }).join('');
+  wrap.classList.remove('hidden');
 }
 
 // ─── Helpers ──────────────────────────────────────────────────

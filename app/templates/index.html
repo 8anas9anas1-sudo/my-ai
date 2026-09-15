@@ -122,7 +122,7 @@
       <div class="welcome-card" onclick="document.getElementById('fileInput').click()">
         <div class="card-icon"><i class="fa-solid fa-file-lines"></i></div>
         <div class="card-title">تحليل ملف</div>
-        <div class="card-desc">PDF أو صورة</div>
+        <div class="card-desc">PDF أو حتى 5 صور دفعة واحدة</div>
       </div>
     </div>
   </div>
@@ -131,9 +131,8 @@
 <!-- Input area -->
 <div class="input-area">
   <div class="file-preview hidden" id="filePreview">
-    <i class="fa-solid fa-file" style="color:var(--accent1)"></i>
-    <span id="fileName">ملف مرفق</span>
-    <button class="msg-btn" onclick="removeFile()" style="margin-right:auto">
+    <div class="attach-thumbs" id="attachThumbs"></div>
+    <button type="button" class="msg-btn" onclick="clearAllFiles()" style="margin-right:auto" title="إزالة الكل">
       <i class="fa-solid fa-xmark"></i>
     </button>
   </div>
@@ -178,8 +177,8 @@
     </div>
   </div>
   <div class="input-wrapper">
-    <input type="file" id="fileInput" accept="image/*,.pdf" onchange="handleFile(this)">
-    <button type="button" class="icon-btn" onclick="document.getElementById('fileInput').click()" title="ارفع ملف">
+    <input type="file" id="fileInput" accept="image/*,.pdf" multiple onchange="handleFile(this)">
+    <button type="button" class="icon-btn" onclick="document.getElementById('fileInput').click()" title="ارفع صور (حتى 5) أو ملف PDF">
       <i class="fa-solid fa-paperclip"></i>
     </button>
     <button type="button" class="icon-btn hidden" id="micBtn" onclick="toggleRecording()" title="تسجيل صوتي">

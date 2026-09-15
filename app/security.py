@@ -115,6 +115,22 @@ def is_valid_image_upload(file_bytes: bytes, content_type: str) -> bool:
     return any(file_bytes.startswith(sig) for sig in _IMAGE_MAGIC_BYTES.get(content_type, ()))
 
 
+# ─── تحقق ملفات الكود/النص (وضع المبرمج) ────────────────────────
+def is_allowed_code_filename(filename: str) -> bool:
+    """يتحقق من امتداد اسم الملف مقابل القائمة البيضاء بـConfig —
+    نفس فكرة is_valid_image_upload لكن بالاسم لا محتوى البايتات
+    (ملفات نصية بصيغ كثيرة جداً، لا توقيع ثنائي موحّد للتحقق منه)."""
+    if not filename:
+        return False
+    name = filename.strip().lower()
+    if name in Config.ALLOWED_CODE_FILENAMES:
+        return True
+    if '.' not in name:
+        return False
+    ext = name.rsplit('.', 1)[-1]
+    return ext in Config.ALLOWED_CODE_EXTENSIONS
+
+
 # ─── تحقق صيغة chat_id ──────────────────────────────────────────
 # chat_id يُولَّد بالواجهة حصراً كـ Date.now().toString() (انظر app.js)
 # — أي رقم صحيح موجب، لا شيء آخر شرعي. القيمة تدخل لاحقاً مباشرة

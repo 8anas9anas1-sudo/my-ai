@@ -546,8 +546,10 @@ pre.file-block { border-color:rgba(255,176,32,0.3); }
 
 /* مؤشر حالة حي أثناء التفكير/البحث — يستبدل نقاط الكتابة مؤقتاً.
    نستخدم شعار التطبيق نفسه (نفس ملف الفافيكون وشاشة الترحيب) بدل نقطة
-   أو إيموجي عامة — نفس فكرة أيقونة كلود المميزة أثناء "التفكير". */
-.status-indicator .status-icon {
+   أو إيموجي عامة — نفس فكرة أيقونة كلود المميزة أثناء "التفكير".
+   .status-icon قاعدة مستقلة (لا مقيَّدة بـ.status-indicator) لأنها
+   تُستخدم أيضاً داخل .image-generating-label أدناه لنفس التأثير. */
+.status-icon {
   width:20px; height:20px; flex-shrink:0; object-fit:contain;
   animation:statusPulse 1.6s ease-in-out infinite;
   filter:drop-shadow(0 0 6px rgba(0,210,255,0.45));
@@ -559,6 +561,28 @@ pre.file-block { border-color:rgba(255,176,32,0.3); }
 @keyframes statusPulse {
   0%,100%{transform:scale(0.9);opacity:0.7}
   50%{transform:scale(1.08);opacity:1}
+}
+
+/* مؤشر "جاري رسم الصورة" — يستبدل نقاط الكتابة فور تحديد نية توليد
+   صورة (حدث image_generating)، بدل ما تبقى الفقاعة جامدة طول مدة
+   التوليد الفعلي (قد تصل لعشر ثوانٍ وأكثر) ثم يظهر كل شيء فجأة.
+   مربّع "هيكلي" (skeleton) بلمعة متحركة بمكان الصورة القادمة تماماً،
+   مع أيقونة ريشة نابضة — إشارة بصرية واضحة أن هناك عملاً حياً. */
+.image-generating { display:flex; flex-direction:column; gap:10px; align-items:flex-start; }
+.image-generating-frame {
+  width:180px; height:180px; max-width:60vw; border-radius:14px;
+  display:flex; align-items:center; justify-content:center;
+  background:linear-gradient(110deg, var(--surface) 30%, var(--surface3) 50%, var(--surface) 70%);
+  background-size:200% 100%; animation:shimmerSweep 1.6s ease-in-out infinite;
+  border:1px solid var(--border); color:var(--accent1); font-size:26px;
+}
+.image-generating-frame i { animation:statusPulse 1.6s ease-in-out infinite; }
+.image-generating-label {
+  color:var(--text-dim); font-size:14px; display:inline-flex; align-items:center; gap:8px;
+}
+@keyframes shimmerSweep {
+  0% { background-position:200% 0; }
+  100% { background-position:-200% 0; }
 }
 
 /* لوحة "عرض التفكير" — مطوية افتراضياً، يفتحها المستخدم لو حب يشوف
@@ -599,6 +623,17 @@ pre.file-block { border-color:rgba(255,176,32,0.3); }
 }
 @keyframes imgReveal { from{opacity:0;transform:scale(0.94)} to{opacity:1;transform:scale(1)} }
 
+/* شبكة صور مرفوعة متعددة برسالة واحدة (حتى 5) — صورة واحدة تستخدم
+   .generated-img العادية بعرض كامل، أكثر من صورة تدخل هذه الشبكة. */
+.user-images-grid {
+  display:grid; grid-template-columns:repeat(auto-fill, minmax(84px,1fr));
+  gap:6px; margin-top:10px; max-width:340px;
+}
+.user-images-grid .generated-img {
+  width:100%; aspect-ratio:1; object-fit:cover; margin-top:0;
+  border-radius:10px; cursor:pointer;
+}
+
 /* ═══════════════════════════════════════════
    INPUT AREA
 ═══════════════════════════════════════════ */
@@ -638,9 +673,32 @@ textarea::placeholder { color:var(--text-muted); }
   max-width:800px; margin:0 auto 8px;
   display:flex; align-items:center; gap:8px;
   background:rgba(0,210,255,0.07); border:1px solid rgba(0,210,255,0.2);
-  padding:8px 14px; border-radius:10px; font-size:13px;
+  padding:10px 14px; border-radius:14px; font-size:13px;
 }
 .file-preview.hidden { display:none; }
+
+/* شريط معاينة المرفقات — صور مصغّرة حقيقية (لا اسم ملف نصي فقط) حتى
+   5 صور، أو مربّع أيقونة واحد لملف PDF/كود، كل واحد بزر إزالة خاص. */
+.attach-thumbs { display:flex; gap:8px; flex-wrap:wrap; }
+.attach-thumb {
+  position:relative; width:56px; height:56px; border-radius:10px;
+  overflow:hidden; flex-shrink:0; border:1px solid var(--border);
+  background:var(--surface2); animation:thumbPop 0.22s ease both;
+}
+.attach-thumb img { width:100%; height:100%; object-fit:cover; display:block; }
+.attach-thumb.attach-thumb-file {
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:3px; color:var(--accent1); font-size:18px;
+}
+.attach-thumb-file span { font-size:9px; color:var(--text-dim); font-weight:700; }
+.attach-thumb .attach-remove {
+  position:absolute; top:2px; left:2px; width:18px; height:18px;
+  border-radius:50%; background:rgba(5,5,16,0.75); color:#fff;
+  border:none; display:flex; align-items:center; justify-content:center;
+  font-size:9px; cursor:pointer; line-height:1; padding:0;
+}
+.attach-thumb .attach-remove:hover { background:var(--accent4); }
+@keyframes thumbPop { from{opacity:0;transform:scale(0.75)} to{opacity:1;transform:scale(1)} }
 
 /* ═══════════════════════════════════════════
    MODALS

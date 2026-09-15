@@ -2,6 +2,7 @@
 طبقة الوصول لقاعدة البيانات. كل دالة تستخدم بركة الاتصالات المشتركة
 (db_pool) بدل فتح اتصال جديد بكل استعلام.
 """
+import json
 import psycopg
 import secrets
 
@@ -62,6 +63,15 @@ def init_db():
                     -- get_chat_locked_settings أدناه). NULL/'groq' للرسائل
                     -- القديمة قبل هذا العمود = تعمل كالسابق تماماً (Groq).
                     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS model_family TEXT DEFAULT 'groq';
+                    -- مسارات عدّة صور مرفوعة برسالة واحدة (حتى
+                    -- Config.MAX_IMAGES_PER_MESSAGE)، كنص JSON (["path1",
+                    -- "path2", ...]) — نفس باكت uploaded_image_path الخاص،
+                    -- روابط موقّتة تُولَّد من جديد بكل قراءة (انظر
+                    -- api_get_chat). العمود المفرد uploaded_image_path
+                    -- يبقى كما هو للرسائل القديمة (صورة واحدة فقط قبل هذا
+                    -- التحديث) ولا يُكتَب له بعد الآن — القراءة تدعم
+                    -- الاثنين معاً (انظر get_chat_messages/save_message).
+                    ALTER TABLE conversations ADD COLUMN IF NOT EXISTS uploaded_image_paths TEXT;
                 """)
                 cur.execute("""
                     -- ذاكرة طويلة المدى: ملخص واحد لكل محادثة، يُحدَّث
@@ -204,20 +214,27 @@ def verify_user(email, password):
 # ─── المحادثات ──────────────────────────────────────────────────
 def save_message(chat_id, user_email, user_name, user_message, ai_response,
                   raw_ai, mode, image_url=None, file_name=None, uploaded_image_path=None,
-                  reasoning=None, model_family='groq'):
-    """يحفظ الرسالة ويرجّع id الصف الجديد (يُستخدم لاحقاً لإعادة توليد دقيقة)."""
+                  uploaded_image_paths=None, reasoning=None, model_family='groq'):
+    """
+    يحفظ الرسالة ويرجّع id الصف الجديد (يُستخدم لاحقاً لإعادة توليد دقيقة).
+    uploaded_image_paths (لائحة مسارات، صورة أو أكثر) هو الحقل الحالي —
+    يُخزَّن كنص JSON بعمود uploaded_image_paths. uploaded_image_path
+    المفرد ما زال معامَلاً (كتابة إن مُرِّر) للتوافق الخلفي فقط، لا
+    يُستدعى به من routes/api.py بعد هذا التحديث.
+    """
     if not db_pool:
         return None
+    paths_json = json.dumps(uploaded_image_paths) if uploaded_image_paths else None
     try:
         with db_pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO conversations
-                        (chat_id, user_email, user_name, user_message, ai_response, raw_ai, mode, image_url, file_name, uploaded_image_path, reasoning, model_family)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        (chat_id, user_email, user_name, user_message, ai_response, raw_ai, mode, image_url, file_name, uploaded_image_path, uploaded_image_paths, reasoning, model_family)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """, (chat_id, user_email, user_name, user_message, ai_response, raw_ai, mode,
-                      image_url, file_name, uploaded_image_path, reasoning, model_family))
+                      image_url, file_name, uploaded_image_path, paths_json, reasoning, model_family))
                 new_id = cur.fetchone()['id']
             conn.commit()
         return new_id
@@ -318,7 +335,8 @@ def get_chat_messages(chat_id, user_email, limit=None):
                     cur.execute("""
                         SELECT * FROM (
                             SELECT id, user_message, ai_response, raw_ai, image_url, file_name,
-                                   uploaded_image_path, reasoning, mode, model_family, created_at
+                                   uploaded_image_path, uploaded_image_paths, reasoning, mode,
+                                   model_family, created_at
                             FROM conversations
                             WHERE chat_id = %s AND user_email = %s
                             ORDER BY id DESC
@@ -328,12 +346,24 @@ def get_chat_messages(chat_id, user_email, limit=None):
                 else:
                     cur.execute("""
                         SELECT id, user_message, ai_response, raw_ai, image_url, file_name,
-                               uploaded_image_path, reasoning, mode, model_family, created_at
+                               uploaded_image_path, uploaded_image_paths, reasoning, mode,
+                               model_family, created_at
                         FROM conversations
                         WHERE chat_id = %s AND user_email = %s
                         ORDER BY created_at ASC
                     """, (chat_id, user_email))
-                return cur.fetchall()
+                rows = cur.fetchall()
+                # uploaded_image_paths مخزَّن كنص JSON خام بقاعدة البيانات —
+                # نحوّله للائحة بايثون هنا (طبقة الوصول) بدل ترك كل
+                # مستدعٍ (routes/api.py وغيره لاحقاً) يكرر json.loads بنفسه.
+                for r in rows:
+                    raw_paths = r.get('uploaded_image_paths')
+                    if raw_paths:
+                        try:
+                            r['uploaded_image_paths'] = json.loads(raw_paths)
+                        except Exception:
+                            r['uploaded_image_paths'] = None
+                return rows
     except Exception as e:
         log.error(f"خطأ في جلب المحادثة: {e}")
         return []
