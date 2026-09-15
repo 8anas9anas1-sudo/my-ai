@@ -45,6 +45,24 @@ class Config:
     OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
     OPENROUTER_META_MODEL = "dots-studio/dots-3-note-preview:free"
     OPENROUTER_META_FALLBACK_MODEL = "nvidia/nemotron-3.5-lightning:free"
+    # ⚠️ إصلاح 15 سبتمبر 2026: طبقتا NVIDIA/Gemini (راجع app/config.py،
+    # أُضيفتا 14 سبتمبر) كانتا غائبتين تماماً عن هذا الـConfig الوهمي رغم
+    # أن _build_provider_chain الحقيقي يقرأهما مباشرة (`if Config.NVIDIA_API_KEY:`)
+    # بمجرد أي محاولة فعلية على عائلة meta — هذا كان يُسقِط كل الاختبار
+    # فوراً بـAttributeError عند أول سيناريو (تأكَّد فعلياً: شغّلت الملف
+    # قبل هذا الإصلاح وطلع بالضبط هذا الخطأ). None = "غير مضبوط" هنا
+    # يطابق سلوك Config الحقيقي بلا هذين المفتاحين — نفس ما كانت تختبره
+    # السيناريوهات أصلاً (فقط OpenRouter مفعّل لعائلة meta).
+    NVIDIA_API_KEY = None
+    GEMINI_API_KEY = None
+    # نفس المبدأ لخط الدفاع الأخير الجديد (Cloudflare Workers AI، راجع
+    # نهاية _build_provider_chain) — معطَّل افتراضياً هنا حتى لا يُغيّر
+    # سلوك السيناريوهات 1-6 الحالية (كلها تفترض عدم وجوده)، ويُفعَّل
+    # صراحة فقط بسيناريو 7 أسفل عبر CloudflareEnabledConfig.
+    CLOUDFLARE_API_TOKEN = None
+    CLOUDFLARE_API_URL = None
+    CLOUDFLARE_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+    CLOUDFLARE_MAX_TOKENS = 4096
     PROVIDER_COOLDOWN_BASE_SECONDS = 20
     PROVIDER_COOLDOWN_MAX_SECONDS = 600
     PROVIDER_AUTH_ERROR_COOLDOWN_SECONDS = 600
@@ -273,6 +291,70 @@ assert 'Wadi 3.3' in err_msg, "الرسالة يجب تذكر اسم العائ�
 assert 'الأساسي والاحتياطية' not in err_msg, "🚨 رسالة مضلِّلة — Groq لم يُجرَّب إطلاقاً بهذا المسار"
 print("✅ نجح: رسالة خطأ مخصَّصة وصحيحة لعائلة meta الصريحة")
 print()
+print("=" * 70)
+print("سيناريو 7: Cloudflare Workers AI كخط دفاع أخير — Groq (أساسي+احتياطي)")
+print("وعائلة meta الاحتياطية بالكامل يفشلون، Cloudflare ينقذ الرسالة")
+print("=" * 70)
+
+
+class CloudflareEnabledConfig(Config):
+    """نفس الـConfig الأساسي + Cloudflare مفعَّل — سيناريو مستقل بدل تلويث
+    الـ7 سيناريوهات السابقة (كلها تفترض عدم وجوده)."""
+    CLOUDFLARE_API_TOKEN = "fake-cloudflare-token"
+    CLOUDFLARE_API_URL = "https://api.cloudflare.com/client/v4/accounts/fake-account/ai/v1/chat/completions"
+
+
+ai.Config = CloudflareEnabledConfig  # الوحدة تستورد Config وقت التحميل — نستبدل المرجع مباشرة لهذا السيناريو فقط
+ph._local_state.clear()
+events, mock_post, mock_sleep = run_chain([
+    make_fail_response(429, "quota exceeded"),   # groq primary
+    make_fail_response(429, "quota exceeded"),   # groq fallback
+    make_fail_response(503, "down"),             # openrouter meta أساسي (Dots3-Note)
+    make_fail_response(500, "down"),             # openrouter meta احتياطي (Nemotron 3.5 Lightning)
+    make_success_response(["تم", " الإنقاذ"]),     # Cloudflare Workers AI — آخر خطوة بالسلسلة
+])
+kinds = [k for k, d in events]
+print("تسلسل الأحداث:", kinds)
+last_call = mock_post.call_args_list[-1]
+print("آخر رابط اتُصل به:", last_call.args[0] if last_call.args else last_call.kwargs.get('url'))
+assert mock_post.call_count == 5, f"توقعنا 5 استدعاءات (Groq×2 + meta×2 + Cloudflare)، حصل {mock_post.call_count}"
+called_url = last_call.args[0] if last_call.args else last_call.kwargs.get('url')
+assert called_url == CloudflareEnabledConfig.CLOUDFLARE_API_URL, \
+    f"🚨 الخطوة الأخيرة يجب أن تكون Cloudflare تحديداً، اتصلنا بـ{called_url}"
+called_model = last_call.kwargs.get('json', {}).get('model')
+assert called_model == CloudflareEnabledConfig.CLOUDFLARE_MODEL, \
+    f"🚨 موديل خاطئ بالطلب الأخير: {called_model!r}"
+final_text = "".join(d for k, d in events if k == 'chunk')
+assert final_text == "تم الإنقاذ", f"النص النهائي خطأ: {final_text!r}"
+assert events[-1][0] == 'done'
+assert kinds.count('quota_switch') == 1, \
+    "quota_switch يجب أن يظهر مرة واحدة فقط (عند أول انتقال لعائلة meta) — Cloudflare خطوة صامتة لا تستاهل تنبيهاً ثانياً"
+print("✅ نجح: كل شيء فشل (Groq×2 + meta×2)، Cloudflare أنقذ الرسالة كآخر محاولة حقيقية")
+print()
+
+print("=" * 70)
+print("سيناريو 8: حتى Cloudflare يفشل — رسالة عربية نهائية نظيفة فقط،")
+print("بدون تسريب أي نص خام من Cloudflare للمستخدم")
+print("=" * 70)
+ph._local_state.clear()
+events, mock_post, mock_sleep = run_chain([
+    make_fail_response(429, "quota exceeded"),
+    make_fail_response(429, "quota exceeded"),
+    make_fail_response(503, "down"),
+    make_fail_response(500, "down"),
+    make_fail_response(500, "Internal Server Error — Cloudflare raw message"),  # Cloudflare يفشل هو الآخر
+])
+assert events[-1][0] == 'error'
+err_msg = events[-1][1]
+print("رسالة الخطأ النهائية:", err_msg)
+assert 'Cloudflare raw message' not in err_msg, \
+    "🚨 نص خام من Cloudflare تسرّب للمستخدم!"
+assert err_msg.startswith('⚠️')
+print("✅ نجح: رسالة عربية نظيفة حتى بعد فشل كل الطبقات السبع (Groq×2 + meta×2 + Cloudflare)")
+print()
+
+ai.Config = Config  # نعيد المرجع الأصلي — لا يؤثر على سيناريوهات سابقة (كلها نُفِّذت أصلاً) لكن نظافة عامة
+
 print("=" * 70)
 print("كل السيناريوهات نجحت ✅")
 print("=" * 70)

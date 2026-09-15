@@ -881,17 +881,22 @@ def _build_provider_chain(model, fallback_model, extra_params, model_family='gro
     Cerebras المذكوران قديماً بهذا المسار لم يعودا مستخدَمين فعلياً منذ
     صارا يطلبان بطاقة دفع — راجع تعليق ⚠️ تحديث سبتمبر 2026 أسفل.
     model_family='meta' ("Wadi 3.3" بالواجهة — اختيار المستخدم الصريح):
-    سلسلة عائلة meta *فقط* (OpenRouter: Dots3-Note Preview ← Nemotron
-    3.5 Lightning — راجع OPENROUTER_META_* بـconfig.py)، بلا أي محاولة على
-    Groq إطلاقاً — احترام صريح لاختيار المستخدم، Groq ليس "احتياطياً
-    خفياً عن احتياطي" هنا.
+    سلسلة عائلة meta *فقط*: NVIDIA NIM ← Gemini ← OpenRouter (Dots3-Note
+    Preview ← Nemotron 3.5 Lightning) — راجع NVIDIA_*/GEMINI_*/
+    OPENROUTER_META_* بـconfig.py — بلا أي محاولة على Groq إطلاقاً —
+    احترام صريح لاختيار المستخدم، Groq ليس "احتياطياً خفياً عن احتياطي" هنا.
     model_family='oss' ("Wadi 2.1" بالواجهة — اختيار المستخدم الصريح
-    أيضاً، أُضيف سبتمبر 2026): سلسلة OpenRouter فقط (موديل أساسي ثم
-    احتياطي، كلاهما مفتوحا مصدر ومجانيان بلا بطاقة دفع — راجع
-    OPENROUTER_* بـconfig.py لتفاصيل الاختيار)، بنفس منطق عزل meta عن Groq.
+    أيضاً، أُضيف سبتمبر 2026): سلسلة مماثلة بموديلات مختلفة: NVIDIA NIM
+    ← Gemini ← OpenRouter (أساسي ثم احتياطي) — كلها مفتوحة/بلا بطاقة دفع
+    — راجع NVIDIA_*/GEMINI_*/OPENROUTER_* بـconfig.py لتفاصيل الاختيار،
+    بنفس منطق عزل meta عن Groq.
 
     كل خطوة عنصر واحد بقائمة بدل شيفرة خاصة منفصلة لكل مزوّد، فيمكن
     إضافة/حذف/إعادة ترتيب مزوّد بتعديل هذه الدالة فقط.
+
+    خط دفاع أخير إضافي *عابر للعائلات الثلاث* (بلا أي شرط على
+    model_family): Cloudflare Workers AI تُلحَق آخر شيء بأي سلسلة —
+    راجع القسم المخصَّص أسفل هذه الدالة لتفاصيله الكاملة.
 
     notify=True تُوضَع تلقائياً على أول خطوة "عائلة مختلفة عن Groq"
     *فقط* لو بدأنا فعلاً بسلسلة Groq (model_family='groq') — تُستخدم
@@ -946,7 +951,35 @@ def _build_provider_chain(model, fallback_model, extra_params, model_family='gro
     # OPENROUTER_META_MODEL/OPENROUTER_META_FALLBACK_MODEL تغيّرتا.
     # سبب الاختيار وتفاصيله موثّقة كاملة بـconfig.py (قسم "عائلة
     # Wadi 3.3") — لا داعٍ لتكرارها هنا.
+    #
+    # ⚠️ تحديث 14 سبتمبر 2026: NVIDIA NIM وGemini يُضافان *قبل*
+    # خطوتَي OpenRouter — مفتاحان مستقلان تماماً عن OPENROUTER_API_KEY
+    # المشترك (راجع NVIDIA_API_KEY/GEMINI_API_KEY بـconfig.py للتفاصيل
+    # الكاملة وسبب الإضافة: حصة الـ50/يوم المشتركة كانت تُستنفد بسرعة
+    # بمجرد اختبار عائلتي meta وoss بنفس اليوم). داخل نفس شرط
+    # ENABLE_CROSS_PROVIDER_FALLBACK/model_family=='meta' أسفل عمداً —
+    # لو الخادم عطّل الاحتياطي التلقائي صراحة (وmodel_family=='groq')،
+    # لا يجوز لهاتين الخطوتين "التسلل" رغم ذلك. كل واحدة `if` منفصلة
+    # داخلياً — غياب أي مفتاح لا يعطّل البقية، فقط يتخطى خطوته هو.
     if Config.ENABLE_CROSS_PROVIDER_FALLBACK or model_family == 'meta':
+        if Config.NVIDIA_API_KEY:
+            chain.append({
+                'id': f'nvidia:{Config.NVIDIA_META_MODEL}',
+                'url': Config.NVIDIA_API_URL,
+                'headers': {"Authorization": f"Bearer {Config.NVIDIA_API_KEY}",
+                            "Content-Type": "application/json"},
+                'payload_extra': {"model": Config.NVIDIA_META_MODEL},
+                'family': 'meta',
+            })
+        if Config.GEMINI_API_KEY:
+            chain.append({
+                'id': f'gemini:{Config.GEMINI_META_MODEL}',
+                'url': Config.GEMINI_API_URL,
+                'headers': {"Authorization": f"Bearer {Config.GEMINI_API_KEY}",
+                            "Content-Type": "application/json"},
+                'payload_extra': {"model": Config.GEMINI_META_MODEL},
+                'family': 'meta',
+            })
         if Config.OPENROUTER_API_KEY:
             chain.append({
                 'id': f'openrouter:{Config.OPENROUTER_META_MODEL}',
@@ -971,22 +1004,70 @@ def _build_provider_chain(model, fallback_model, extra_params, model_family='gro
     # Groq التلقائي فقط). خطوتان على نفس مزوّد OpenRouter (زي نمط
     # الأساسي/الاحتياطي بـgroq أعلاه) بدل مزوّدين مختلفين — التفاصيل
     # وسبب اختيار هذين الموديلين تحديداً موثّقة بـOPENROUTER_* بـconfig.py.
-    if model_family == 'oss' and Config.OPENROUTER_API_KEY:
+    # نفس إضافة NVIDIA/Gemini أعلاه، بموديلَين مختلفين (NVIDIA_OSS_MODEL/
+    # GEMINI_OSS_MODEL) — راجع التعليق بقسم meta فوق للتفاصيل الكاملة.
+    # نفس الحذر بخصوص التداخل: هذا كله يجب أن يبقى محصوراً بـ
+    # model_family=='oss' صراحة، بلا أي علاقة بـENABLE_CROSS_PROVIDER_
+    # FALLBACK (زي الأصل تماماً) — لذلك الشرط الخارجي هنا هو
+    # model_family=='oss' نفسه، لا أي شيء آخر.
+    if model_family == 'oss':
+        if Config.NVIDIA_API_KEY:
+            chain.append({
+                'id': f'nvidia:{Config.NVIDIA_OSS_MODEL}',
+                'url': Config.NVIDIA_API_URL,
+                'headers': {"Authorization": f"Bearer {Config.NVIDIA_API_KEY}",
+                            "Content-Type": "application/json"},
+                'payload_extra': {"model": Config.NVIDIA_OSS_MODEL},
+                'family': 'oss',
+            })
+        if Config.GEMINI_API_KEY:
+            chain.append({
+                'id': f'gemini:{Config.GEMINI_OSS_MODEL}',
+                'url': Config.GEMINI_API_URL,
+                'headers': {"Authorization": f"Bearer {Config.GEMINI_API_KEY}",
+                            "Content-Type": "application/json"},
+                'payload_extra': {"model": Config.GEMINI_OSS_MODEL},
+                'family': 'oss',
+            })
+        if Config.OPENROUTER_API_KEY:
+            chain.append({
+                'id': f'openrouter:{Config.OPENROUTER_MODEL}',
+                'url': Config.OPENROUTER_API_URL,
+                'headers': {"Authorization": f"Bearer {Config.OPENROUTER_API_KEY}",
+                            "Content-Type": "application/json"},
+                'payload_extra': {"model": Config.OPENROUTER_MODEL},
+                'family': 'oss',
+            })
+            chain.append({
+                'id': f'openrouter:{Config.OPENROUTER_FALLBACK_MODEL}',
+                'url': Config.OPENROUTER_API_URL,
+                'headers': {"Authorization": f"Bearer {Config.OPENROUTER_API_KEY}",
+                            "Content-Type": "application/json"},
+                'payload_extra': {"model": Config.OPENROUTER_FALLBACK_MODEL},
+                'family': 'oss',
+            })
+
+    # ─── خط الدفاع الأخير: Cloudflare Workers AI — أي عائلة ──────────
+    # ⚠️ أُضيف 15 سبتمبر 2026: على عكس كل قسم أعلاه (كل واحد محصور
+    # بعائلة meta أو oss تحديداً)، هذي الخطوة *عابرة للعائلات* — تُلحَق
+    # هنا آخر شيء بلا أي شرط على model_family ولا على
+    # ENABLE_CROSS_PROVIDER_FALLBACK (ذلك الإعداد يخص احتياطي Groq
+    # التلقائي فقط، راجع تعليقه أعلاه بهذه الدالة). سواء كانت السلسلة
+    # groq الافتراضية (Wadi 5.4) أو meta الصريحة (Wadi 3.3) أو oss
+    # الصريحة (Wadi 2.1)، لو كل خطواتها فشلت معاً، Cloudflare هي
+    # المحاولة الحقيقية الأخيرة قبل رسالة "كل المسارات مزدحمة" النهائية
+    # بأسفل stream_chat_completion. تفاصيل الاختيار والحصة المجانية
+    # كاملة بتعليق CLOUDFLARE_* بـconfig.py — بلا CLOUDFLARE_API_TOKEN/
+    # CLOUDFLARE_ACCOUNT_ID مضبوطين، تُستبعَد تلقائياً بلا أي خطأ.
+    if Config.CLOUDFLARE_API_TOKEN and Config.CLOUDFLARE_API_URL:
         chain.append({
-            'id': f'openrouter:{Config.OPENROUTER_MODEL}',
-            'url': Config.OPENROUTER_API_URL,
-            'headers': {"Authorization": f"Bearer {Config.OPENROUTER_API_KEY}",
+            'id': f'cloudflare:{Config.CLOUDFLARE_MODEL}',
+            'url': Config.CLOUDFLARE_API_URL,
+            'headers': {"Authorization": f"Bearer {Config.CLOUDFLARE_API_TOKEN}",
                         "Content-Type": "application/json"},
-            'payload_extra': {"model": Config.OPENROUTER_MODEL},
-            'family': 'oss',
-        })
-        chain.append({
-            'id': f'openrouter:{Config.OPENROUTER_FALLBACK_MODEL}',
-            'url': Config.OPENROUTER_API_URL,
-            'headers': {"Authorization": f"Bearer {Config.OPENROUTER_API_KEY}",
-                        "Content-Type": "application/json"},
-            'payload_extra': {"model": Config.OPENROUTER_FALLBACK_MODEL},
-            'family': 'oss',
+            'payload_extra': {"model": Config.CLOUDFLARE_MODEL},
+            'max_tokens_cap': Config.CLOUDFLARE_MAX_TOKENS,
+            'family': 'cloudflare',
         })
 
     for step in chain:

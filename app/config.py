@@ -229,6 +229,85 @@ class Config:
     OPENROUTER_META_MODEL = "dots-studio/dots-3-note-preview:free"
     OPENROUTER_META_FALLBACK_MODEL = "nvidia/nemotron-3.5-lightning:free"
 
+    # ─── NVIDIA NIM وGoogle Gemini — طبقتان جديدتان بمفتاح مستقل تماماً ──
+    # أُضيفتا 14 سبتمبر 2026 كحل لمشكلة حصة الـ50 طلب/يوم المشتركة أعلاه:
+    # بدل الاعتماد كلياً على مفتاح OpenRouter الواحد لعائلتي meta وoss
+    # معاً، هاتان طبقتان *قبل* خطوتي OpenRouter بكل سلسلة — بمفتاحين
+    # منفصلين تماماً، فاستنفاد أحدهما لا يؤثر على البقية إطلاقاً.
+    #
+    # • NVIDIA NIM (build.nvidia.com) — بلا بطاقة دفع إطلاقاً (مؤكَّد من
+    #   عدة مصادر مستقلة)، متوافق OpenAI بالكامل (نفس شكل طلب Groq/
+    #   OpenRouter هنا حرفياً). ⚠️ ملاحظة صدق مهمة: المصادر تتضارب على
+    #   طبيعة الحصة المجانية — بعضها يذكر "10,000 طلب/يوم" كرقم متجدد،
+    #   وأخرى (تدوينات تقنية أحدث) تصفها كرصيد نقاط لمرة واحدة عند
+    #   التسجيل (1000، يرتفع لـ5000 عند الطلب) لا يتجدد يومياً بالضرورة.
+    #   التحقق اليقيني الوحيد: افحصي حسابكم الفعلي بـbuild.nvidia.com بعد
+    #   التسجيل. بغض النظر عن أي التفسيرين صحيح، الكمية أكبر بكثير من
+    #   الـ50/يوم الحالية بأي الحالتين. حد المعدّل اللحظي مؤكَّد من كل
+    #   المصادر: 40 طلب/دقيقة.
+    # • Google Gemini (مباشرة عبر نقطة توافق OpenAI الرسمية من Google، لا
+    #   عبر OpenRouter) — بلا بطاقة دفع، حتى 1500 طلب/يوم لموديلات Flash
+    #   حسب مصادر مجتمعية محدَّثة (جوجل نفسها توقفت عن نشر جدول أرقام
+    #   رسمي ثابت للحصة المجانية وتوجّه للوحة تحكم AI Studio بدلاً من
+    #   ذلك — تحققي من https://aistudio.google.com/rate-limit بعد
+    #   التسجيل للرقم الفعلي الحالي لحسابكم).
+    #
+    # موديل مختلف لكل عائلة بكلا المزوّدين (نفس مبدأ "موديلان مختلفان
+    # فعلياً" أعلاه) — meta تبقى أخف/أوسع استخداماً، oss تبقى الأثقل/الأكبر.
+    NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY")
+    NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+    NVIDIA_META_MODEL = "nvidia/nemotron-3-super-120b-a12b"
+    NVIDIA_OSS_MODEL = "nvidia/nemotron-3-ultra-550b-a55b"
+
+    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+    GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    GEMINI_META_MODEL = "gemini-2.5-flash"
+    GEMINI_OSS_MODEL = "gemini-2.5-flash-lite"
+
+    # ─── Cloudflare Workers AI — خط الدفاع الأخير العام (15 سبتمبر 2026) ──
+    # الفرق الجوهري عن كل طبقة أعلاه: تلك كلها مربوطة بعائلة محدَّدة
+    # (meta أو oss). هذي طبقة *عابرة للعائلات الثلاث* — تُضاف كخطوة
+    # أخيرة بأي سلسلة (راجع نهاية _build_provider_chain بـai_service.py)
+    # بلا أي علاقة بـENABLE_CROSS_PROVIDER_FALLBACK ولا بـmodel_family
+    # المختار. الهدف: لو استُنفدت كل مفاتيح المزوّدين المجانيين أعلاه
+    # معاً بنفس اللحظة تقريباً (نادر لكن وارد بحمل مرتفع — بالضبط
+    # السيناريو اللي تشرحه تعليقات provider_health.py)، تبقى محاولة
+    # حقيقية أخيرة قبل رسالة "كل المسارات مزدحمة" النهائية للمستخدم.
+    #
+    # • نقطة النهاية: REST API الرسمية من Cloudflare (api.cloudflare.com،
+    #   لا gateway.ai.cloudflare.com القديمة) — /ai/v1/chat/completions
+    #   موثّقة صراحة "OpenAI SDK compatible" (developers.cloudflare.com/
+    #   changelog، تحديث REST API مايو 2026)، فتندمج بنفس
+    #   _stream_openai_compatible المشترك هنا حرفياً بلا أي منطق خاص
+    #   إضافي — نفس شكل طلب/بث Groq وNVIDIA وGemini وOpenRouter تماماً.
+    # • الموديل (llama-3.3-70b-instruct-fp8-fast من كتالوج Workers AI):
+    #   Llama 3.3 70B حقيقي (fp8، مُحسَّن للسرعة) — نفس وزن/فئة الموديلات
+    #   المستخدمة بعائلتي meta/oss أعلاه، لا موديل صغير ضعيف. سياق محدود
+    #   نسبياً (24K توكن فقط حسب توثيق Cloudflare الرسمي لهذا الموديل
+    #   تحديداً) — لهذا CLOUDFLARE_MAX_TOKENS أسفل متحفظ، نفس فلسفة
+    #   SAMBANOVA_FALLBACK_MAX_TOKENS فوق (رد مبتور أفضل من فشل الطلب).
+    # • الحصة المجانية: 10,000 Neuron/يوم (وحدة قياس Cloudflare الموحَّدة
+    #   لكل أنواع الاستدلال)، تتجدد يومياً 00:00 UTC، بلا أي بطاقة دفع
+    #   مطلوبة للتفعيل — مؤكَّدة من توثيق Cloudflare الرسمي
+    #   (developers.cloudflare.com/workers-ai/platform/pricing) ومصادر
+    #   مستقلة متعددة (تحقق سبتمبر 2026). تجاوز الحصة يُفوتَر
+    #   $0.011/1000 Neuron على خطة Workers Paid بدل رفض الطلب — لن يُحاسَب
+    #   المستخدم شيئاً ما لم تُفعَّل خطة مدفوعة صراحة بحساب Cloudflare.
+    # • بلا CLOUDFLARE_API_TOKEN/CLOUDFLARE_ACCOUNT_ID مضبوطين، هذي الخطوة
+    #   تُستبعَد تلقائياً من كل سلسلة بلا أي خطأ (نفس مبدأ NVIDIA_API_KEY/
+    #   GEMINI_API_KEY أعلاه) — التوكن يُنشأ من لوحة Cloudflare
+    #   (Workers AI → API → إنشاء توكن بصلاحية "Workers AI: Read" فقط،
+    #   لا صلاحيات أوسع)، ومعرّف الحساب من نفس رابط اللوحة
+    #   (dash.cloudflare.com/<account_id>/ai/workers-ai).
+    CLOUDFLARE_API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN")
+    CLOUDFLARE_ACCOUNT_ID = os.environ.get("CLOUDFLARE_ACCOUNT_ID")
+    CLOUDFLARE_API_URL = (
+        f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1/chat/completions"
+        if CLOUDFLARE_ACCOUNT_ID else None
+    )
+    CLOUDFLARE_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+    CLOUDFLARE_MAX_TOKENS = 4096  # سقف متحفظ — سياق الموديل 24K توكن فقط عند Cloudflare (راجع الشرح أعلاه)
+
     # ─── دائرة القطع (Circuit Breaker) لكل مزوّد — راجع app/provider_health.py ──
     # بدل إعادة اكتشاف "هذا المزوّد مستنفد حالياً" من الصفر بكل رسالة
     # (round-trip كامل + مهلة اتصال ضائعة)، نتذكر الفشل لفترة تصاعدية:
