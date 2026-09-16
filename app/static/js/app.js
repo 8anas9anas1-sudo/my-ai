@@ -206,6 +206,31 @@ function setImageFamily(f, save = true) {
   document.getElementById('imageFamilyDropdown')?.classList.add('hidden');
 }
 
+// .composer-row-left صار overflow-x:auto (تمرير أفقي للأزرار بالشاشات
+// الضيقة) — وهذا يجبر المتصفح ضمنياً على قصّ overflow-y كمان (قاعدة
+// CSS القياسية: أي محور غير visible يحوّل المحور الآخر تلقائياً لـauto)،
+// فأي قائمة .mode-dropdown بداخله بـposition:absolute تنقصّ وتصير غير
+// مرئية إطلاقاً رغم إزالة .hidden عنها — هذا كان سبب "القوائم ما تفتح".
+// الحل: القائمة تُموضع بـposition:fixed (بالـCSS) ونحسب إحداثياتها هنا
+// وقت الفتح من مكان الزر الفعلي على الشاشة، فتفلت من أي قصّ لأي حاوية
+// أب مهما كان overflow عندها.
+function positionDropdown(pill, dropdown) {
+  if (!pill || !dropdown) return;
+  const r = pill.getBoundingClientRect();
+  dropdown.style.bottom = (window.innerHeight - r.top + 8) + 'px';
+  dropdown.style.right = (window.innerWidth - r.right) + 'px';
+}
+// أي تمرير أو تدوير شاشة أثناء ما قائمة مفتوحة يخلّي موضعها المحسوب
+// قديم (الزر يتحرك، القائمة الثابتة لأ) — نقفلها بدل ما تبقى معلّقة
+// بمكان غلط.
+function closeAllModeDropdowns() {
+  document.getElementById('modeDropdown')?.classList.add('hidden');
+  document.getElementById('modelFamilyDropdown')?.classList.add('hidden');
+  document.getElementById('imageFamilyDropdown')?.classList.add('hidden');
+}
+document.querySelector('.composer-row-left')?.addEventListener('scroll', closeAllModeDropdowns);
+window.addEventListener('resize', closeAllModeDropdowns);
+
 function toggleModeDropdown() {
   document.getElementById('modelFamilyDropdown')?.classList.add('hidden');
   document.getElementById('imageFamilyDropdown')?.classList.add('hidden');
@@ -213,7 +238,10 @@ function toggleModeDropdown() {
     showToast('الوضع مثبَّت لهذه المحادثة — بدّله من محادثة جديدة', '');
     return;
   }
-  document.getElementById('modeDropdown')?.classList.toggle('hidden');
+  const pill = document.getElementById('modePill');
+  const dd = document.getElementById('modeDropdown');
+  if (dd?.classList.contains('hidden')) positionDropdown(pill, dd);
+  dd?.classList.toggle('hidden');
 }
 function toggleModelFamilyDropdown() {
   document.getElementById('modeDropdown')?.classList.add('hidden');
@@ -222,22 +250,35 @@ function toggleModelFamilyDropdown() {
     showToast('النموذج مثبَّت لهذه المحادثة — بدّله من محادثة جديدة', '');
     return;
   }
-  document.getElementById('modelFamilyDropdown')?.classList.toggle('hidden');
+  const pill = document.getElementById('modelFamilyPill');
+  const dd = document.getElementById('modelFamilyDropdown');
+  if (dd?.classList.contains('hidden')) positionDropdown(pill, dd);
+  dd?.classList.toggle('hidden');
 }
 // بلا أي فحص "locked" (بعكس الاثنتين فوق) — عائلة توليد الصور تبقى
 // قابلة للتغيير بحرّية طول عمر المحادثة، راجع تعليق currentImageFamily أعلاه.
 function toggleImageFamilyDropdown() {
   document.getElementById('modeDropdown')?.classList.add('hidden');
   document.getElementById('modelFamilyDropdown')?.classList.add('hidden');
-  document.getElementById('imageFamilyDropdown')?.classList.toggle('hidden');
+  const pill = document.getElementById('imageFamilyPill');
+  const dd = document.getElementById('imageFamilyDropdown');
+  if (dd?.classList.contains('hidden')) positionDropdown(pill, dd);
+  dd?.classList.toggle('hidden');
 }
 document.addEventListener('click', (e) => {
-  const modeWrap = document.getElementById('modeDropdown')?.closest('.mode-selector-wrap');
-  const familyWrap = document.getElementById('modelFamilyDropdown')?.closest('.mode-selector-wrap');
-  const imageFamilyWrap = document.getElementById('imageFamilyDropdown')?.closest('.mode-selector-wrap');
-  if (modeWrap && !modeWrap.contains(e.target)) document.getElementById('modeDropdown')?.classList.add('hidden');
-  if (familyWrap && !familyWrap.contains(e.target)) document.getElementById('modelFamilyDropdown')?.classList.add('hidden');
-  if (imageFamilyWrap && !imageFamilyWrap.contains(e.target)) document.getElementById('imageFamilyDropdown')?.classList.add('hidden');
+  const modeWrap = document.getElementById('modePill');
+  const familyWrap = document.getElementById('modelFamilyPill');
+  const imageFamilyWrap = document.getElementById('imageFamilyPill');
+  const modeDD = document.getElementById('modeDropdown');
+  const familyDD = document.getElementById('modelFamilyDropdown');
+  const imageFamilyDD = document.getElementById('imageFamilyDropdown');
+  // القوائم صارت fixed خارج .mode-selector-wrap بصرياً، فمقارنة
+  // "الضغطة جوّه العنصر" لازم تشمل الزر نفسه أو القائمة نفسها معاً —
+  // closest('.mode-selector-wrap') وحده كان كافياً لما القائمة كانت
+  // absolute بداخله، لكن مع fixed القائمة برّا الصندوق فعلياً.
+  if (modeWrap && modeDD && !modeWrap.contains(e.target) && !modeDD.contains(e.target)) modeDD.classList.add('hidden');
+  if (familyWrap && familyDD && !familyWrap.contains(e.target) && !familyDD.contains(e.target)) familyDD.classList.add('hidden');
+  if (imageFamilyWrap && imageFamilyDD && !imageFamilyWrap.contains(e.target) && !imageFamilyDD.contains(e.target)) imageFamilyDD.classList.add('hidden');
 });
 
 // ─── قفل الوضع/النموذج بمحادثة بدأت فعلاً ───────────────────────
