@@ -1,6 +1,7 @@
 import io
 import base64
 import json
+import time
 
 from flask import Blueprint, request, jsonify, session, Response, stream_with_context
 
@@ -392,11 +393,34 @@ def chat():
         full_raw = ""
         full_reasoning = ""
         had_error = False
+        # نُعيد تشغيل format_response (نفس الدالة المستخدمة للرد النهائي
+        # بالأسفل — لا منطق موازٍ مكرّر) على النص المتراكم حتى الآن بدل
+        # إرسال كل جزء خام كما وصل من المزوّد. هذا يحل مشكلتين معاً:
+        # (١) رموز Markdown خام (##, **, جداول |---|) كانت تظهر للمستخدم
+        # حرفياً طول مدة الكتابة ثم "تُصلَح" دفعة واحدة لحظة الاكتمال —
+        # قفزة مفاجئة بمظهر الفقاعة تحسّ وكأنها عطل. (٢) ماركر الاستشهاد
+        # الداخلي 【...†...】 (راجع تعليق format_response) كان يُرسَل خاماً
+        # للمتصفح فوراً رغم أن format_response يحذفه بالنهاية — أي بيانات
+        # داخلية غير مخصصة للعرض كانت تصل فعلياً، ولو لحظياً، لشاشة المستخدم.
+        # بدل ذلك: كل تحديث حي الآن HTML مُنسَّق ومُعقَّم (نفس nh3.clean
+        # المُستخدَم بالرد النهائي) يستبدل الفقاعة بالكامل، فتظهر الكتابة
+        # مُنسَّقة تدريجياً (عناوين/عريض/جداول تتشكل أثناء الكتابة) بدل
+        # رموز خام — والاستشهادات لا تظهر إطلاقاً بأي لحظة.
+        # التقييد الزمني (٨ تحديثات/ث تقريباً) يمنع تشغيل format_response
+        # على كل توكن وصل من المزوّد (قد تصل عشرات بالثانية) بلا داعٍ —
+        # سلس بصرياً بما يكفي لإحساس سينمائي، وخفيف على السيرفر.
+        EMIT_MIN_INTERVAL = 0.12
+        last_emitted_len = 0
+        last_emit_time = 0.0
         for kind, data in stream_chat_completion(model, final_messages, temperature, max_tokens,
                                                    extra_params, fallback_model, model_family=model_family):
             if kind == 'chunk':
                 full_raw += data
-                yield _sse('chunk', content=data)
+                now = time.monotonic()
+                if len(full_raw) != last_emitted_len and now - last_emit_time >= EMIT_MIN_INTERVAL:
+                    yield _sse('chunk', content=format_response(full_raw))
+                    last_emitted_len = len(full_raw)
+                    last_emit_time = now
             elif kind == 'reasoning':
                 full_reasoning += data
                 yield _sse('reasoning', content=data)

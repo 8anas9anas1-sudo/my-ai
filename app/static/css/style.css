@@ -255,10 +255,6 @@ body::before {
 /* ═══════════════════════════════════════════
    MODE SELECTOR + TOOLS (مضغوط، زي Claude)
 ═══════════════════════════════════════════ */
-.tools-row {
-  display:flex; align-items:center; gap:8px; margin-bottom:9px;
-  max-width:800px; margin-right:auto; margin-left:auto;
-}
 .mode-selector-wrap { position:relative; }
 
 .mode-pill {
@@ -635,29 +631,70 @@ pre.file-block { border-color:rgba(255,176,32,0.3); }
 }
 
 /* ═══════════════════════════════════════════
-   INPUT AREA
+   INPUT AREA — بطاقة كتابة موحّدة (Composer)
+   النص وكل عناصر التحكم (إرفاق / وضع / نموذج / مايك / إرسال)
+   داخل بطاقة واحدة بحدود تتوهّج عند التركيز، بدل صفّين منفصلين —
+   نفس منطق واجهات الدردشة الاحترافية، بهوية Wadi (تدرّج أخضر↔سماوي).
 ═══════════════════════════════════════════ */
 .input-area {
   position:sticky; bottom:0; z-index:10;
   background:var(--header-bg); backdrop-filter:blur(20px);
   border-top:1px solid var(--border); padding:10px 16px 14px;
 }
-
-.input-wrapper { max-width:800px; margin:0 auto; display:flex; gap:8px; align-items:flex-end; }
-.textarea-wrap { flex:1; position:relative; }
-textarea {
-  width:100%; background:var(--surface2); border:1px solid var(--border);
-  color:var(--text); border-radius:16px; padding:13px 16px;
-  font-size:15px; font-family:'Tajawal',sans-serif;
-  resize:none; height:52px; max-height:130px;
-  transition:border-color 0.25s, box-shadow 0.25s; line-height:1.5;
-}
-textarea:focus {
-  outline:none; border-color:var(--accent1);
-  box-shadow:0 0 0 3px rgba(0,210,255,0.1);
-}
-textarea::placeholder { color:var(--text-muted); }
 #fileInput { display:none; }
+
+.composer {
+  max-width:800px; margin:0 auto;
+  background:var(--surface2); border:1px solid var(--border);
+  border-radius:26px; padding:6px 8px 8px;
+  box-shadow:0 8px 28px rgba(0,0,0,0.18);
+  transition:border-color 0.25s, box-shadow 0.25s;
+}
+.composer:focus-within {
+  border-color:var(--border-glow);
+  box-shadow:0 0 0 3px rgba(0,210,255,0.1), 0 8px 28px rgba(0,0,0,0.18);
+}
+
+.composer .textarea-wrap { position:relative; padding:0 6px; }
+.composer textarea {
+  width:100%; background:transparent; border:none; outline:none;
+  color:var(--text); padding:11px 4px 4px;
+  font-size:15.5px; font-family:'Tajawal',sans-serif; line-height:1.5;
+  resize:none; height:46px; max-height:130px; transition:height 0.1s;
+}
+.composer textarea:focus { box-shadow:none; }
+.composer textarea::placeholder { color:var(--text-muted); }
+
+.composer-row {
+  display:flex; align-items:center; justify-content:space-between;
+  gap:6px; padding:4px 2px 0; margin-top:2px;
+}
+.composer-row-left, .composer-row-right {
+  display:flex; align-items:center; gap:6px; min-width:0;
+}
+.composer-row-right { flex-shrink:0; }
+/* لو الوضع + النموذج + زر الإرفاق ما ضاقوا بعرض الشاشة، نمرّرهم أفقياً
+   بدل ما يكسروا الصف أو يتراكبوا — نفس حل تطبيقات الدردشة على الجوال. */
+.composer-row-left { flex:1; overflow-x:auto; scrollbar-width:none; -ms-overflow-style:none; }
+.composer-row-left::-webkit-scrollbar { display:none; }
+
+.composer-icon-btn {
+  background:transparent; border:1px solid transparent;
+  color:var(--text-dim); width:34px; height:34px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  font-size:14.5px; cursor:pointer; transition:all 0.2s; flex-shrink:0;
+}
+.composer-icon-btn:hover { background:var(--surface3); color:var(--text); }
+.composer-icon-btn:active { transform:scale(0.9); }
+.composer-icon-btn.hidden { display:none; }
+.composer-icon-btn.recording {
+  background:rgba(255,77,77,0.15); color:#ff4d4d;
+  animation:micPulse 1.2s infinite;
+}
+
+.composer .mode-pill { flex-shrink:0; }
+.composer .send-btn { width:38px; height:38px; border-radius:50%; font-size:15px; }
+
 .send-btn {
   background:linear-gradient(135deg,var(--accent2),var(--accent1));
   border:none; border-radius:14px; width:52px; height:52px;
@@ -699,6 +736,69 @@ textarea::placeholder { color:var(--text-muted); }
 }
 .attach-thumb .attach-remove:hover { background:var(--accent4); }
 @keyframes thumbPop { from{opacity:0;transform:scale(0.75)} to{opacity:1;transform:scale(1)} }
+
+/* ─── قائمة الإرفاق السفلية (صور / ملفات / كاميرا) ───────────────
+   بدل الضغطة المباشرة اللي كانت تفتح متصفح ملفات الجهاز بلا خيارات —
+   شيت سفلي بثلاثة اختيارات واضحة، بنفس نمط تطبيقات الدردشة الاحترافية
+   على الجوال (خلفية زجاجية، مقبض سحب، شبكة أيقونات بهوية Wadi). */
+.attach-sheet-overlay {
+  position:fixed; inset:0; z-index:250;
+  background:rgba(0,0,0,0.55); backdrop-filter:blur(6px);
+  -webkit-backdrop-filter:blur(6px);
+  display:flex; align-items:flex-end; justify-content:center;
+  opacity:0; transition:opacity 0.25s;
+}
+.attach-sheet-overlay.hidden { display:none; }
+.attach-sheet-overlay.open { opacity:1; }
+
+.attach-sheet {
+  width:100%; max-width:480px;
+  background:var(--sidebar-bg); backdrop-filter:blur(24px);
+  -webkit-backdrop-filter:blur(24px);
+  border:1px solid var(--border); border-bottom:none;
+  border-radius:24px 24px 0 0;
+  padding:10px 18px max(18px, env(safe-area-inset-bottom));
+  transform:translateY(100%);
+  transition:transform 0.32s cubic-bezier(0.34,1.56,0.64,1);
+  box-shadow:0 -10px 40px rgba(0,0,0,0.4);
+}
+.attach-sheet-overlay.open .attach-sheet { transform:translateY(0); }
+
+.attach-sheet-handle { width:36px; height:4px; border-radius:3px; background:var(--border); margin:0 auto 14px; }
+.attach-sheet-title { font-size:13.5px; font-weight:700; color:var(--text-dim); margin-bottom:14px; text-align:center; }
+
+.attach-sheet-grid { display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; }
+.attach-sheet-option {
+  display:flex; flex-direction:column; align-items:center; gap:8px;
+  background:transparent; border:none; color:var(--text);
+  padding:10px 4px; border-radius:16px; cursor:pointer;
+  font-family:'Tajawal',sans-serif; font-size:12.5px; font-weight:600;
+  transition:background 0.2s, transform 0.15s;
+}
+.attach-sheet-option:hover { background:var(--surface2); }
+.attach-sheet-option:active { transform:scale(0.95); background:var(--surface3); }
+.attach-sheet-icon {
+  width:52px; height:52px; border-radius:16px;
+  background:var(--surface2); border:1px solid var(--border);
+  display:flex; align-items:center; justify-content:center;
+  font-size:19px; color:var(--accent1); transition:all 0.2s;
+}
+.attach-sheet-option:hover .attach-sheet-icon { border-color:var(--border-glow); box-shadow:var(--glow); }
+.attach-sheet-icon-photos { color:var(--accent2); }
+.attach-sheet-icon-camera { color:var(--accent3); }
+.attach-sheet-hint { margin-top:14px; text-align:center; font-size:11.5px; color:var(--text-muted); line-height:1.6; }
+
+/* شاشات ضيّقة جداً (360px وأقل) — الإرفاق + حبّتا الوضع/النموذج مع
+   المايك والإرسال يضيق عليهم العرض الافتراضي. نُصغّر الحشو والخط قليلاً
+   هنا فقط بدل الاعتماد على التمرير الأفقي وحده (الذي يبقى شبكة أمان
+   لتسميات أطول مستقبلاً، لا الحل الأساسي على الأجهزة الشائعة). */
+@media (max-width:380px) {
+  .composer-icon-btn { width:30px; height:30px; font-size:13px; }
+  .composer-row-left, .composer-row-right { gap:4px; }
+  .composer .mode-pill { padding:6px 9px; font-size:11.5px; gap:5px; }
+  .composer .mode-pill-chevron { margin-right:0; font-size:8px; }
+  .composer .send-btn { width:34px; height:34px; }
+}
 
 /* ═══════════════════════════════════════════
    MODALS
@@ -923,8 +1023,7 @@ body[data-app-mode="coder"] .mode-pill.flash { animation:coderModeFlash 0.5s eas
 
 /* عرض أوسع للمحتوى — كود يحتاج مساحة أكبر من نص محادثة عادي */
 body[data-app-mode="coder"] .chat-container,
-body[data-app-mode="coder"] .tools-row,
-body[data-app-mode="coder"] .input-wrapper { max-width:920px; }
+body[data-app-mode="coder"] .composer { max-width:920px; border-radius:14px; }
 
 /* فقاعات بخط أصغر وأكثف وزوايا أحدّ — إحساس محرر كود لا دردشة ودّية.
    كل فقاعة رد تفتح بعلامة طرفية صغيرة (زي عنوان نافذة terminal). */
@@ -949,7 +1048,10 @@ body[data-app-mode="coder"] .user-msg { font-size:14px; border-radius:10px 10px 
 
 /* عناصر تحكم أكبر وأوضح بمنطقة الكتابة — إحساس "لوحة تحكم" */
 body[data-app-mode="coder"] textarea { min-height:56px; font-size:14.5px; border-radius:10px; }
-body[data-app-mode="coder"] .send-btn { width:56px; height:56px; border-radius:11px; }
+body[data-app-mode="coder"] .composer .send-btn { width:44px; height:44px; border-radius:13px; }
+body[data-app-mode="coder"] .attach-sheet { border-radius:16px 16px 0 0; }
+body[data-app-mode="coder"] .attach-sheet-icon,
+body[data-app-mode="coder"] .attach-sheet-option { border-radius:9px; }
 
 /* بطاقات الترحيب والقوائم — زوايا حادة تناسب باقي الهوية */
 body[data-app-mode="coder"] .welcome-card { border-radius:9px; border-color:rgba(255,176,32,0.18); }

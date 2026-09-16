@@ -405,7 +405,7 @@ function renderChat() {
         <div class="welcome-card" onclick="useTemplate('ارسم صورة: ')"><div class="card-icon"><i class="fa-solid fa-palette"></i></div><div class="card-title">رسم صورة</div><div class="card-desc">توليد صور فائقة الجودة</div></div>
         <div class="welcome-card" onclick="useTemplate('اشرحلي ')"><div class="card-icon"><i class="fa-solid fa-lightbulb"></i></div><div class="card-title">شرح وتحليل</div><div class="card-desc">أشرح أي موضوع تريده</div></div>
         <div class="welcome-card" onclick="setMode('coder');useTemplate('اصنعلي مشروع ')"><div class="card-icon"><i class="fa-solid fa-code"></i></div><div class="card-title">مشروع كامل</div><div class="card-desc">موقع، API، بوت — جاهز للتشغيل</div></div>
-        <div class="welcome-card" onclick="document.getElementById('fileInput').click()"><div class="card-icon"><i class="fa-solid fa-file-lines"></i></div><div class="card-title">تحليل ملف</div><div class="card-desc">PDF أو حتى 5 صور دفعة واحدة</div></div>
+        <div class="welcome-card" onclick="openAttachSheet()"><div class="card-icon"><i class="fa-solid fa-file-lines"></i></div><div class="card-title">تحليل ملف</div><div class="card-desc">PDF أو حتى 5 صور دفعة واحدة</div></div>
       </div>
     </div>`;
     return;
@@ -510,13 +510,17 @@ function renderChat() {
   });
 }
 
-// أثناء البث الحي نحدّث فقاعة الرسالة فقط (نص خام غير منسّق بعد، لتفادي
-// عرض Markdown نصف مكتمل) بدل إعادة بناء الشات بالكامل في كل قطعة —
-// هذا يحل أيضاً مشكلة أداء renderChat() القديمة عند التحديث المتكرر.
-function updateStreamingContent(index, rawText) {
+// أثناء البث الحي نحدّث فقاعة الرسالة فقط (لا إعادة بناء الشات بالكامل
+// بكل قطعة — يحل مشكلة أداء renderChat() القديمة عند التحديث المتكرر).
+// html هنا مُنسَّق ومُعقَّم بالفعل من الخادم (format_response + nh3.clean
+// مُعاد تشغيلها على النص المتراكم كل ~120ms أثناء البث — راجع routes/api.py)،
+// فنضعها innerHTML مباشرة بدل textContent: النتيجة عناوين/عريض/جداول
+// تتشكل تدريجياً أثناء الكتابة، لا رموز ## أو ** أو | خام تظهر ثم تُصلَح
+// دفعة واحدة لحظة الاكتمال.
+function updateStreamingContent(index, html) {
   const el = document.getElementById('msg-' + index);
   if (el) {
-    el.textContent = rawText;
+    el.innerHTML = html;
     window.scrollTo(0, document.body.scrollHeight);
   }
 }
@@ -773,7 +777,11 @@ async function streamChat(fd, { onFirstChunk, onChunk, onReasoning, onToolStart,
   const reader = r.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  let raw = '';
+  // evt.content بحدث 'chunk' هو HTML كامل ومُنسَّق (ناتج format_response
+  // بالخادم مُعاد تشغيلها على النص المتراكم حتى تلك اللحظة، لا نص خام
+  // مباشر من المزوّد) — لقطة كاملة تستبدل ما قبلها، لا جزء يُضاف له.
+  // لذا "آخر HTML وصل" هو ببساطة evt.content نفسه، بلا أي تراكم يدوي هنا.
+  let latestHtml = '';
   let gotFirstChunk = false;
   while (true) {
     const { value, done } = await reader.read();
@@ -788,8 +796,8 @@ async function streamChat(fd, { onFirstChunk, onChunk, onReasoning, onToolStart,
       try { evt = JSON.parse(line.slice(5).trim()); } catch(e) { continue; }
       if (evt.type === 'chunk') {
         if (!gotFirstChunk) { gotFirstChunk = true; onFirstChunk && onFirstChunk(); }
-        raw += evt.content;
-        onChunk && onChunk(raw);
+        latestHtml = evt.content;
+        onChunk && onChunk(latestHtml);
       } else if (evt.type === 'reasoning') {
         onReasoning && onReasoning(evt.content);
       } else if (evt.type === 'tool_start') {
@@ -867,7 +875,13 @@ async function sendMessage() {
       onImageGenerating: () => { if (c[msgIndex].ai === '__typing__') updateImageGeneratingIndicator(msgIndex); },
       onQuotaSwitch: (retryAfter) => showQuotaSwitchModal(retryAfter),
       onFirstChunk: () => { c[msgIndex].ai = ''; },
-      onChunk: (rawAccum) => { c[msgIndex].ai = rawAccum; updateStreamingContent(msgIndex, rawAccum); },
+      // html: لقطة كاملة من format_response مُعاد تشغيلها بالخادم على
+      // النص المتراكم (راجع routes/api.py) — مُنسَّقة ومُعقَّمة بالفعل،
+      // لا نص خام. نخزّنها كـai بنفس صيغة evt.response النهائية تماماً،
+      // لكن sanitized يبقى بلا تحديد هنا عمداً (راجع finally بالأسفل) —
+      // معناها "وصلنا لحالة نهائية فعلية (onDone/onError)"، لا "المحتوى
+      // آمن للعرض"، حتى تبقى إشارة انقطاع الاتصال تعمل لو صار قبل onDone.
+      onChunk: (html) => { c[msgIndex].ai = html; updateStreamingContent(msgIndex, html); },
       onDone: (evt) => {
         c[msgIndex].ai = evt.response;
         c[msgIndex].sanitized = true; // جاء من format_response المُعقَّم بالخادم
@@ -911,11 +925,12 @@ async function sendMessage() {
   } finally {
     // لو ما وصلنا هنا لا بـonDone ولا بـonError/catch (مثال: انقطاع
     // شبكة فعلي منتصف البث، أو تبديل تطبيق على موبايل يُعلّق الطلب)،
-    // m.ai يبقى نصاً خاماً متراكماً من onChunk — لم يمرّ إطلاقاً بـ
-    // bleach. لازم يُعقَّم هنا قبل ما يُحفَظ بـlocalStorage ويُعرَض
-    // لاحقاً عبر renderChat كـHTML خام.
+    // c[msgIndex].ai يبقى بآخر HTML وصل من onChunk — مُنسَّق ومُعقَّم
+    // بالفعل من الخادم (format_response + nh3.clean، لا نص خام يحتاج
+    // escHtml هنا كما كان سابقاً) — فقط نُلحق ملاحظة الانقطاع ونعلّمها
+    // sanitized حتى لا يُعاد التعامل معها هنا مرة ثانية عبثاً.
     if (c[msgIndex] && c[msgIndex].ai && c[msgIndex].ai !== '__typing__' && !c[msgIndex].sanitized) {
-      c[msgIndex].ai = escHtml(c[msgIndex].ai) + '<br><em style="opacity:.6">(انقطع الاتصال قبل اكتمال الرد)</em>';
+      c[msgIndex].ai = c[msgIndex].ai + '<br><em style="opacity:.6">(انقطع الاتصال قبل اكتمال الرد)</em>';
       c[msgIndex].sanitized = true;
       renderChat();
     }
@@ -960,7 +975,8 @@ async function regenerate(i) {
       onImageGenerating: () => { if (c[i].ai === '__typing__') updateImageGeneratingIndicator(i); },
       onQuotaSwitch: (retryAfter) => showQuotaSwitchModal(retryAfter),
       onFirstChunk: () => { c[i].ai = ''; },
-      onChunk: (rawAccum) => { c[i].ai = rawAccum; updateStreamingContent(i, rawAccum); },
+      // نفس منطق sendMessage تماماً — راجع تعليقها أعلاه.
+      onChunk: (html) => { c[i].ai = html; updateStreamingContent(i, html); },
       onDone: (evt) => {
         c[i].ai = evt.response; c[i].sanitized = true;
         c[i].rawAi = evt.rawResponse || evt.response;
@@ -976,16 +992,70 @@ async function regenerate(i) {
     c[i].sanitized = true;
     renderChat();
   } finally {
-    // نفس حماية sendMessage: بث انقطع بلا onDone/onError يترك نصاً
-    // خاماً غير مُعقَّم بـm.ai — يُعقَّم هنا قبل الحفظ والعرض.
+    // نفس حماية sendMessage تماماً (راجع تعليقها هناك) — c[i].ai آخر
+    // HTML مُنسَّق ومُعقَّم وصل من onChunk، لا نص خام يحتاج escHtml.
     if (c[i] && c[i].ai && c[i].ai !== '__typing__' && !c[i].sanitized) {
-      c[i].ai = escHtml(c[i].ai) + '<br><em style="opacity:.6">(انقطع الاتصال قبل اكتمال الرد)</em>';
+      c[i].ai = c[i].ai + '<br><em style="opacity:.6">(انقطع الاتصال قبل اكتمال الرد)</em>';
       c[i].sanitized = true;
       renderChat();
     }
     saveChats(); isSending = false;
   }
 }
+
+// ─── قائمة الإرفاق السفلية (صور / ملفات / كاميرا) ───────────────
+// بدل ضغطة واحدة كانت تفتح متصفح ملفات الجهاز مباشرة بلا خيارات —
+// شيت سفلي بثلاثة اختيارات واضحة. حقل <input type=file> يبقى واحداً
+// (fileInput)؛ نضبط عليه accept وcapture حسب الخيار المُختار مباشرة
+// قبل كل .click()، فلا حاجة لحقول متعددة ولا حالة متبقية من اختيار سابق.
+function openAttachSheet() {
+  updateAttachSheetHint();
+  const overlay = document.getElementById('attachSheetOverlay');
+  if (!overlay) return;
+  overlay.classList.remove('hidden');
+  requestAnimationFrame(() => overlay.classList.add('open'));
+}
+function closeAttachSheet() {
+  const overlay = document.getElementById('attachSheetOverlay');
+  if (!overlay) return;
+  overlay.classList.remove('open');
+  setTimeout(() => overlay.classList.add('hidden'), 320);
+}
+function closeAttachSheetClick(e) {
+  if (e.target.id === 'attachSheetOverlay') closeAttachSheet();
+}
+function updateAttachSheetHint() {
+  const hint = document.getElementById('attachSheetHint');
+  if (!hint) return;
+  hint.textContent = currentMode === 'coder'
+    ? `حتى ${MAX_ATTACH_IMAGES} صور دفعة واحدة، أو ملف PDF/كود واحد`
+    : `حتى ${MAX_ATTACH_IMAGES} صور دفعة واحدة، أو ملف PDF واحد`;
+}
+function openAttachOption(type) {
+  const inp = document.getElementById('fileInput');
+  closeAttachSheet();
+  if (!inp) return;
+  if (type === 'camera') {
+    inp.accept = 'image/*';
+    inp.setAttribute('capture', 'environment');
+    inp.multiple = false;
+  } else if (type === 'photos') {
+    inp.accept = 'image/*';
+    inp.removeAttribute('capture');
+    inp.multiple = true;
+  } else {
+    inp.accept = currentMode === 'coder' ? `${BASE_FILE_ACCEPT},${CODER_FILE_ACCEPT_EXTRA}` : BASE_FILE_ACCEPT;
+    inp.removeAttribute('capture');
+    inp.multiple = true;
+  }
+  // .click() لازم يصير بنفس دورة التفاعل المباشرة لضغطة المستخدم — لو
+  // أُخِّر (مثلاً بعد setTimeout) بعض المتصفحات بالجوال (خصوصاً Safari)
+  // ترفض فتح منتقي الملفات لعدم اعتباره ناتج تفاعل مستخدم مباشر.
+  inp.click();
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeAttachSheet();
+});
 
 // ─── File ─────────────────────────────────────────────────────
 // المرفقات: حتى MAX_ATTACH_IMAGES صور برسالة واحدة (بمعاينة مصغّرة
