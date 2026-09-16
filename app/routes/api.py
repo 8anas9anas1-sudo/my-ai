@@ -1,4 +1,5 @@
 import io
+import html
 import base64
 import json
 import time
@@ -22,7 +23,9 @@ from app.ai_service import (
     transcribe_audio, synthesize_speech, strip_markdown_for_speech, split_text_for_tts,
     has_live_tools, is_time_sensitive_question, fetch_live_grounding_context,
 )
-from app.storage import upload_image, get_signed_url, persist_generated_image
+from app.storage import (
+    upload_image, get_signed_url, persist_generated_image, persist_generated_image_bytes,
+)
 from app.memory import maybe_summarize_async
 from app.rag import search_relevant_chunks
 
@@ -32,13 +35,6 @@ bp = Blueprint('api', __name__, url_prefix='/api')
 def _sse(event_type, **kwargs):
     payload = {"type": event_type, **kwargs}
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-
-
-@bp.route('/debug-ip')
-def debug_ip():
-    # مؤقت — بند #8 بتقرير التدقيق: يُحذف فور الحصول على النتيجة،
-    # هو وسطره المقابل بـ allowed_routes بـ app/__init__.py.
-    return request.headers.get('X-Forwarded-For', 'none')
 
 
 @bp.route("/chats")
@@ -108,6 +104,13 @@ def chat():
     model_family = request.form.get("model_family", Config.DEFAULT_MODEL_FAMILY)
     if model_family not in Config.MODEL_FAMILIES:
         model_family = Config.DEFAULT_MODEL_FAMILY
+    # عائلة موديل توليد الصور (قوي/يومي/مجاني) — منفصلة كلياً عن عائلة
+    # المحادثة النصية أعلاه، ولا تُقفَل على مستوى المحادثة (بعكس mode/
+    # model_family تحت — راجع تعليق IMAGE_MODEL_FAMILIES بـconfig.py):
+    # لا مانع منطقياً من طلب صورة "قوية" ثم أخرى "مجانية" بنفس المحادثة.
+    image_family = request.form.get("image_family", Config.DEFAULT_IMAGE_MODEL_FAMILY)
+    if image_family not in Config.IMAGE_MODEL_FAMILIES:
+        image_family = Config.DEFAULT_IMAGE_MODEL_FAMILY
     chat_id = request.form.get("chat_id", "")
     if chat_id and not is_valid_chat_id(chat_id):
         # صيغة غير متوقَّعة (chat_id شرعي دائماً رقم صحيح فقط، انظر
@@ -188,13 +191,56 @@ def chat():
             yield _sse('image_generating')
             prompt = extract_image_prompt(user_message)
             english_prompt = translate_image_prompt(prompt)
-            primary_url, _ = generate_image(english_prompt)
-            # نخزّن الصورة بمخزننا الخاص لو التخزين مفعّل — حتى لا تعتمد
-            # المحادثات القديمة على استقرار pollinations.ai على المدى
-            # الطويل. لو فشل التخزين، نرجع للرابط الأصلي بهدوء.
-            display_url = (persist_generated_image(primary_url, user_email, chat_id)
-                            if chat_id else None) or primary_url
-            response_text = f'<i class="fa-solid fa-palette"></i> تم توليد الصورة!\n**الوصف:** {prompt}\n\n_انقر على الصورة لعرضها بحجمها الكامل_'
+            result = generate_image(english_prompt, image_family)
+            used_family = result['used_family']
+
+            if result['kind'] == 'bytes':
+                # عائلة 'pro' أو 'plus' (Gemini) — bytes جاهزة، نرفعها
+                # مباشرة لمخزننا الخاص لو التخزين مفعّل (لا خطوة تنزيل
+                # هنا، بعكس مسار pollinations تحت).
+                display_url = (
+                    persist_generated_image_bytes(result['payload'], result['mime_type'], user_email, chat_id)
+                    if chat_id else None
+                )
+                if not display_url:
+                    # بلا تخزين دائم (Supabase غير مضبوط أو فشل الرفع) —
+                    # نعرض الصورة مباشرة كـdata URI بدل فقدانها بالكامل؛
+                    # مقبول لعرض فوري، لكن لن ينجو من إعادة تحميل الصفحة
+                    # لاحقاً (نفس القيد المعروف أصلاً بدون Supabase هنا).
+                    b64 = base64.b64encode(result['payload']).decode('ascii')
+                    display_url = f"data:{result['mime_type']};base64,{b64}"
+            else:
+                # عائلة 'free' (pollinations.ai) — رابط مباشر، نخزّنه
+                # بمخزننا الخاص لو التخزين مفعّل حتى لا تعتمد المحادثات
+                # القديمة على استقرار pollinations.ai على المدى الطويل.
+                # لو فشل التخزين، نرجع للرابط الأصلي بهدوء.
+                display_url = (
+                    persist_generated_image(result['payload'], user_email, chat_id)
+                    if chat_id else None
+                ) or result['payload']
+
+            # ملاحظة صريحة للمستخدم لو حصل تراجع تلقائي (راجع generate_image
+            # بـai_service.py) — بدل صمت قد يوحي أن طلبه نُفِّذ بالعائلة
+            # التي اختارها بالضبط رغم أنه لم يحصل.
+            family_note = ''
+            if used_family != image_family:
+                requested_label = Config.IMAGE_MODEL_FAMILIES.get(image_family, {}).get('label', image_family)
+                used_label = Config.IMAGE_MODEL_FAMILIES.get(used_family, {}).get('label', used_family)
+                family_note = (
+                    f'<br><span style="opacity:.65;font-size:.9em">'
+                    f'تعذّر التوليد عبر "{requested_label}" فتم التراجع تلقائياً لـ"{used_label}"'
+                    f'</span>'
+                )
+
+            # prompt نص خام من المستخدم (بعد sanitize_input فقط — لا هروب
+            # HTML) يُعرَض مباشرة كـinnerHTML بالواجهة (app.js) — html.escape
+            # هنا ضروري لمنع أي وسم/سكريبت داخل الوصف من التنفيذ.
+            safe_prompt = html.escape(prompt)
+            response_text = (
+                f'<i class="fa-solid fa-palette"></i> تم توليد الصورة!<br>'
+                f'<strong>الوصف:</strong> {safe_prompt}{family_note}<br><br>'
+                f'<span style="opacity:.65;font-size:.9em">انقر على الصورة لعرضها بحجمها الكامل</span>'
+            )
             raw_text = f"تم توليد صورة: {prompt}"
             new_id = None
             if chat_id:

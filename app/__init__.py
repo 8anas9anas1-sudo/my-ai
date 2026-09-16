@@ -25,7 +25,7 @@ def create_app():
     # المنطقي لصفحة الدخول — اكتُشف هذا فعلياً بالاختبار، لا نظرياً.
     @app.before_request
     def require_login():
-        allowed_routes = ['auth.login', 'auth.register', 'auth.reset_password', 'static', 'api.debug_ip']  # api.debug_ip: مؤقت لبند #8، يُحذف السطر مع المسار نفسه لاحقاً
+        allowed_routes = ['auth.login', 'auth.register', 'auth.reset_password', 'static']
         if 'user' not in session and request.endpoint not in allowed_routes:
             return redirect(url_for('auth.login'))
 

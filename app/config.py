@@ -81,7 +81,6 @@ class Config:
         'thinker':  'openai/gpt-oss-120b',
         'coder':    'openai/gpt-oss-120b',
         'writer':   'openai/gpt-oss-120b',
-        'creative': 'openai/gpt-oss-120b',
     }
     GROQ_VISION_MODEL = 'qwen/qwen3.6-27b'  # preview عند Groq — راقب استقراره
     # موديل رؤية بديل عند 429 فقط — نفس فكرة GROQ_FALLBACK_MODEL تماماً،
@@ -466,7 +465,7 @@ class Config:
     VOICE_RATE_LIMIT = "15 per minute"
 
     TEMP_MAP = {
-        'funny': 0.92, 'creative': 0.88, 'writer': 0.82,
+        'funny': 0.92, 'writer': 0.82,
         'thinker': 0.45, 'coder': 0.25, 'fast': 0.72,
     }
     # coder كان 4096 — قليل جداً لمشروع متعدد الملفات (كان يقطع الملفات
@@ -475,13 +474,13 @@ class Config:
     # إخراج عند Groq — رفعناه لـ16000 كهامش حقيقي بدون تطرف على السقف.
     MAX_TOKENS_MAP = {
         'coder': 16000, 'thinker': 3000, 'writer': 2500,
-        'creative': 2000, 'funny': 1500, 'fast': 2048,
+        'funny': 1500, 'fast': 2048,
     }
     # gpt-oss نماذج "تفكير" (reasoning) — نفعّلها بعمق متوسط لوضعي
     # المفكر والمبرمج حيث الدقة أهم، ونخفّضها للأوضاع السريعة/الإبداعية.
     REASONING_MAP = {
         'thinker': 'medium', 'coder': 'medium', 'writer': 'low',
-        'creative': 'low', 'fast': 'low', 'funny': 'low',
+        'fast': 'low', 'funny': 'low',
     }
 
     # ─── حماية ────────────────────────────────────────────────────
@@ -550,6 +549,61 @@ class Config:
     # سؤال الهوية لازم يكون كل الرسالة أو رسالة قصيرة (≤ هالعدد من
     # الكلمات) تحتوي العبارة — لا أي رسالة أطول تذكرها بالمرور.
     IDENTITY_MAX_WORDS = 6
+
+    # ─── عائلات موديلات توليد الصور — اختيار المستخدم الصريح (16 سبتمبر 2026) ──
+    # قبل هذا التحديث كان Flux (pollinations.ai) الموديل الوحيد لكل طلب
+    # توليد صورة، بلا أي بديل. أُضيفت هنا عائلتان جديدتان ليختار المستخدم
+    # من الواجهة حسب حاجته الفعلية — نفس فلسفة MODEL_FAMILIES فوق تماماً
+    # (اختيار صريح لا تلقائي) لكن لتوليد الصور تحديداً، ومنفصلة كلياً عن
+    # عائلة موديل المحادثة النصية (routes/api.py يقرأها كحقل مستقل
+    # image_family). بعكس mode/model_family، هذا الاختيار *لا* يُقفَل على
+    # مستوى المحادثة كاملها — لا مانع منطقياً أن يطلب المستخدم صورة "قوية"
+    # ثم أخرى "مجانية" بنفس المحادثة تحديداً.
+    #
+    # 'pro' و'plus' يستخدمان GEMINI_API_KEY نفسه المضبوط أصلاً لعائلتي
+    # "Wadi 3.3"/"Wadi 2.1" النصيتين أعلاه — مفتاح Google AI Studio الواحد
+    # يعمل لكل نقاط نهاية Gemini، فلا حاجة لأي إعداد إضافي لو كان مضبوطاً
+    # أصلاً. بدونه، أو عند أي فشل فعلي (حصة منتهية، خطأ شبكة...)، كلاهما
+    # يتراجعان تلقائياً لـ'free' (راجع generate_image بـai_service.py) —
+    # 'free' وحدها لا تعتمد على أي مفتاح، فهي خط الدفاع الأخير الذي لا
+    # يفشل عملياً.
+    #
+    #   • 'pro' ("قوي") — Gemini 3 Pro Image المعروف إعلامياً بـ"Nano
+    #     Banana Pro" (المعرّف: gemini-3-pro-image-preview). أقوى موديل
+    #     توليد صور تجاري متاح حالياً من Google — دقة نص داخل الصورة
+    #     عالية جداً وإخراج حتى 4K. ⚠️ بلا أي حصة مجانية إطلاقاً: يتطلب
+    #     تفعيل Billing على حساب Google AI Studio/Cloud نفسه بالكامل (أي
+    #     بطاقة بنكية على مستوى حساب المطوّر لا المستخدم النهائي أبداً) —
+    #     ثمن طبيعي مقابل أعلى جودة متاحة. السعر وقت الكتابة تقريباً
+    #     $0.134 لكل صورة 1K/2K (نُحدِّد 1K صراحة بـai_service.py لأرخص
+    #     تسعيرة متاحة) — راجع ai.google.dev/gemini-api/docs/pricing لأي
+    #     تحديث سعري لاحق، فجوجل تغيّر هذي الصفحة بلا إشعار مسبق أحياناً.
+    #   • 'plus' ("يومي") — Gemini 2.5 Flash Image المعروف إعلامياً بـ
+    #     "Nano Banana" (المعرّف: gemini-2.5-flash-image). حصة مجانية
+    #     حقيقية وسخية جداً — حتى ~500 صورة/يوم بلا أي بطاقة بنكية إطلاقاً
+    #     (aistudio.google.com). ⚠️ نفس ملاحظة الصدق المذكورة أصلاً عند
+    #     GEMINI_API_KEY فوق بالحرف: جوجل توقفت عن نشر جدول أرقام رسمي
+    #     ثابت للحصة المجانية — تحقق من aistudio.google.com/rate-limit
+    #     بعد التسجيل للرقم الفعلي الحالي بحسابك تحديداً.
+    #   • 'free' ("مجاني") — نفس Flux عبر pollinations.ai المستخدم وحده
+    #     قبل هذا التحديث (_generate_image_pollinations بـai_service.py):
+    #     بلا أي مفتاح API أو تسجيل أو بطاقة بنكية على الإطلاق — الخيار
+    #     الوحيد هنا الذي لا يعتمد على أي متغيّر بيئة، ولذلك أيضاً خط
+    #     التراجع التلقائي الأخير لو فشلت 'pro'/'plus' كلتاهما معاً.
+    IMAGE_MODEL_FAMILIES = {
+        'pro':  {'label': 'قوي',   'icon': 'fa-gem'},
+        'plus': {'label': 'يومي',  'icon': 'fa-infinity'},
+        'free': {'label': 'مجاني', 'icon': 'fa-image'},
+    }
+    DEFAULT_IMAGE_MODEL_FAMILY = 'free'
+
+    # نقطة نهاية Gemini الأصلية (generateContent) — مختلفة عن GEMINI_API_URL
+    # فوق (نقطة توافق OpenAI) لأن توليد الصور غير مدعوم إطلاقاً عبر تلك
+    # الأخيرة، فقط عبر الصيغة الأصلية هذه (generativelanguage.googleapis.com،
+    # موثّقة رسمياً بـai.google.dev/gemini-api/docs/image-generation).
+    GEMINI_GENERATE_CONTENT_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+    GEMINI_IMAGE_MODEL_PRO = "gemini-3-pro-image-preview"
+    GEMINI_IMAGE_MODEL_PLUS = "gemini-2.5-flash-image"
 
     # عبارات أمر صريحة بحدود كلمة حقيقية لتوليد صورة — وليس أي ظهور
     # لكلمة "صورة" بأي سياق (كانت تخطف رسائل مثل "اشرحلي الصورة الذهنية"

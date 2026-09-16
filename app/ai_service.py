@@ -7,6 +7,7 @@ import re
 import json
 import time
 import random
+import base64
 import hashlib
 import html as html_module
 from datetime import datetime, timezone, timedelta
@@ -65,19 +66,6 @@ MODE_PROMPTS = {
 - الفكاهة بالكلمات والأسلوب، بدون إيموجي — خفة الظل تظهر بالصياغة نفسها.
 - لا تبالغ في الفكاهة على حساب الدقة — المعلومة صح دائماً.
 - تتكيف مع نبرة الشخص — إذا بيمزح خذ المسافة الصحيحة.""",
-
-    'creative': """أنت Wadi المبدع — فنان، شاعر، وعقل خلاق. صنعه Anas Wadi
-
-شخصيتك:
-- ترى العالم بعيون مختلفة وتعبر عنه بطريقة تخلي الناس يتوقفون ويفكرون.
-- الكلمات عندك ليست أدوات — هي تجارب حسية.
-- تشعل خيال الشخص وتأخذه لمكان لم يتوقعه.
-
-قواعد الرد:
-- أجب بأسلوب أدبي راقٍ مع استعارات وتشبيهات جميلة.
-- لطلبات الرسم: ترجم الوصف لإنجليزي دقيق وشاعري يلتقط الجوهر.
-- استخدم الصور الذهنية والإيقاع في الكتابة.
-- كل رد يكون تجربة لا مجرد معلومة.""",
 
     'coder': """أنت Wadi المبرمج — Senior Software Engineer متخصص ومحترف. صنعه Anas Wadi
 
@@ -573,21 +561,118 @@ def translate_image_prompt(prompt):
     return prompt
 
 
-def generate_image(prompt):
+def _generate_image_pollinations(prompt):
+    """المسار المجاني بلا أي مفتاح API أو تسجيل أو بطاقة بنكية (Flux عبر
+    pollinations.ai) — كانت هذه الدالة نفسها (باسم generate_image سابقاً)
+    الطريقة الوحيدة لتوليد الصور قبل إضافة عائلتي 'pro'/'plus' (راجع
+    IMAGE_MODEL_FAMILIES بـconfig.py). ترجع رابطاً مباشراً جاهزاً للعرض
+    والتنزيل — لا bytes، لأن pollinations.ai يولّد الصورة فعلياً فقط عند
+    أول طلب GET حقيقي لهذا الرابط، لا قبل ذلك."""
     clean_prompt = prompt.strip()
     encoded = requests.utils.quote(clean_prompt)
     # seed مبني على hash المحتوى (وليس hash() المدمجة في بايثون، التي
     # تتغير عشوائياً مع كل إعادة تشغيل) — نفس النص يعطي نفس seed دائماً.
     seed = int(hashlib.sha256(clean_prompt.encode()).hexdigest(), 16) % 99999
-    primary_url = (
+    return (
         f"https://image.pollinations.ai/prompt/{encoded}"
         f"?width=1024&height=1024&model=flux&enhance=true&nologo=true&seed={seed}"
     )
-    fallback_url = (
-        f"https://image.pollinations.ai/prompt/{encoded}"
-        f"?width=1024&height=768&nologo=true"
-    )
-    return primary_url, fallback_url
+
+
+def _generate_image_gemini(prompt, model_name, image_config=None):
+    """يولّد صورة عبر نقطة نهاية Gemini الأصلية generateContent (لا نقطة
+    توافق OpenAI المستخدمة لعائلتي المحادثة النصية 'meta'/'oss' بأعلى
+    هذا الملف — توليد الصور غير مدعوم إطلاقاً عبر تلك الأخيرة)، بنفس
+    GEMINI_API_KEY الموجود أصلاً. يُستخدم لكلا عائلتي 'pro' و'plus' معاً
+    (فرق موديل فقط، لا فرق منطق).
+
+    ترجع (bytes, mime_type) عند النجاح، أو None عند أي فشل — مفتاح غير
+    مضبوط، حصة منتهية، خطأ شبكة، أو رد بلا بيانات صورة فعلية — ليتراجع
+    الطالب (generate_image أسفل) تلقائياً لعائلة أبسط بدل كسر الرد
+    بالكامل. نفس فلسفة "أفضل ما يمكن" (best-effort) المتبعة أصلاً بكل
+    دوال storage.py.
+    """
+    if not Config.GEMINI_API_KEY:
+        return None
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    if image_config:
+        payload["generationConfig"] = {"imageConfig": image_config}
+    try:
+        resp = requests.post(
+            f"{Config.GEMINI_GENERATE_CONTENT_URL}/{model_name}:generateContent",
+            headers={
+                "x-goog-api-key": Config.GEMINI_API_KEY,
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=60,
+        )
+        if not resp.ok:
+            log.error(f"فشل طلب توليد صورة عبر Gemini ({model_name}): {resp.status_code} {resp.text[:300]}")
+            return None
+        candidates = resp.json().get('candidates') or []
+        parts = ((candidates[0] if candidates else {}).get('content') or {}).get('parts') or []
+        for part in parts:
+            # الحقل يصل أحياناً inlineData (camelCase، صيغة REST الرسمية)
+            # وأحياناً inline_data حسب SDK/طبقة التوافق — نتحقق من كلا
+            # الاسمين بدل الاعتماد على واحد فقط.
+            inline = part.get('inlineData') or part.get('inline_data')
+            if inline and inline.get('data'):
+                mime_type = inline.get('mimeType') or inline.get('mime_type') or 'image/png'
+                return base64.b64decode(inline['data']), mime_type
+        log.error(f"رد Gemini ({model_name}) بدون بيانات صورة فعلية داخل candidates[0].content.parts")
+        return None
+    except Exception as e:
+        log.error(f"خطأ أثناء توليد صورة عبر Gemini ({model_name}): {e}")
+        return None
+
+
+def generate_image(prompt, family=None):
+    """
+    نقطة الدخول الوحيدة لتوليد صورة، بعد إضافة عائلتي 'pro'/'plus' (راجع
+    IMAGE_MODEL_FAMILIES بـconfig.py للتفاصيل الكاملة لكل عائلة). ترجع
+    دائماً dict بأربعة مفاتيح:
+      - kind: 'bytes' (Gemini — يحتاج رفعاً عبر storage.persist_generated_image_bytes
+        أو data URI مباشر) أو 'url' (pollinations — رابط جاهز مباشرة).
+      - payload: bytes الصورة الفعلية أو رابطها، حسب kind.
+      - mime_type: نوع المحتوى (فقط عند kind == 'bytes'، وإلا None).
+      - used_family: العائلة التي وُلّدت بها الصورة *فعلياً* — قد تختلف
+        عن family المطلوبة لو حصل تراجع تلقائي عند فشل حقيقي. المستدعي
+        (routes/api.py) يقارن هذه بالعائلة المطلوبة أصلاً لإخبار المستخدم
+        بصراحة أن التراجع حصل، بدل صمت قد يبدو كأن طلبه نُفِّذ كما اختار
+        بالضبط رغم أنه لم يُنفَّذ.
+
+    سلسلة التراجع: pro (فشل) → plus (فشل) → free. 'free' وحدها لا تعتمد
+    على أي مفتاح API، فهي خط الدفاع الأخير الذي لا يفشل عملياً — هذه
+    الدالة لذلك لا ترجع None أبداً، حتى لو فشلت 'pro'/'plus' كلتاهما معاً.
+    """
+    family = family if family in Config.IMAGE_MODEL_FAMILIES else Config.DEFAULT_IMAGE_MODEL_FAMILY
+
+    if family == 'pro':
+        # imageSize="1K" صراحة: أرخص تسعيرة متاحة لهذا الموديل المدفوع
+        # (~$0.134/صورة مقابل $0.24 عند 4K) — راجع تعليق IMAGE_MODEL_FAMILIES
+        # بـconfig.py لتفاصيل السعر والمصدر.
+        result = _generate_image_gemini(
+            prompt, Config.GEMINI_IMAGE_MODEL_PRO,
+            image_config={"aspectRatio": "1:1", "imageSize": "1K"}
+        )
+        if result:
+            image_bytes, mime_type = result
+            return {'kind': 'bytes', 'payload': image_bytes, 'mime_type': mime_type, 'used_family': 'pro'}
+        log.error("تراجع تلقائي: فشل توليد صورة عبر 'pro' (Nano Banana Pro) — محاولة 'plus' بدلاً منها")
+        family = 'plus'
+
+    if family == 'plus':
+        result = _generate_image_gemini(prompt, Config.GEMINI_IMAGE_MODEL_PLUS)
+        if result:
+            image_bytes, mime_type = result
+            return {'kind': 'bytes', 'payload': image_bytes, 'mime_type': mime_type, 'used_family': 'plus'}
+        log.error("تراجع تلقائي: فشل توليد صورة عبر 'plus' (Nano Banana) — محاولة 'free' بدلاً منها")
+        family = 'free'
+
+    # 'free' — pollinations.ai، خط الدفاع الأخير الذي لا يعتمد على أي
+    # مفتاح API إطلاقاً، ولذلك لا يفشل عملياً.
+    return {'kind': 'url', 'payload': _generate_image_pollinations(prompt), 'mime_type': None, 'used_family': 'free'}
 
 
 # ─── تنسيق الرد (Markdown خفيف → HTML مُعقّم) ──────────────────

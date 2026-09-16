@@ -109,3 +109,28 @@ def persist_generated_image(source_url, user_email, chat_id):
     except Exception as e:
         log.error(f"خطأ أثناء تخزين الصورة المولّدة: {e}")
         return None
+
+
+def persist_generated_image_bytes(image_bytes, mime_type, user_email, chat_id):
+    """نفس فلسفة persist_generated_image() تماماً، لكن لصور عائلتي 'pro'/
+    'plus' (Gemini، راجع IMAGE_MODEL_FAMILIES بـconfig.py) التي تصل من
+    ai_service.py كبيانات ثنائية جاهزة (base64 مفكوكة) لا كرابط خارجي —
+    فلا حاجة لخطوة تنزيل (requests.get) هنا، فقط رفع مباشر للباكت العام
+    عندنا. لو فشل Supabase غير مضبوط أو فشل الرفع فعلياً، يرجع None
+    ليعرض المستدعي الصورة كـdata URI مباشرة بدل فقدانها بالكامل."""
+    if not storage_configured():
+        return None
+    try:
+        path = f"{user_email}/{chat_id}/{uuid.uuid4().hex}.{_safe_ext(mime_type)}"
+        resp = requests.post(
+            f"{Config.SUPABASE_URL}/storage/v1/object/{Config.SUPABASE_GENERATED_BUCKET}/{path}",
+            headers={**_auth_headers(mime_type or "image/png"), "x-upsert": "true"},
+            data=image_bytes, timeout=20
+        )
+        if resp.ok:
+            return f"{Config.SUPABASE_URL}/storage/v1/object/public/{Config.SUPABASE_GENERATED_BUCKET}/{path}"
+        log.error(f"فشل تخزين صورة Gemini المولّدة: {resp.status_code} {resp.text[:200]}")
+        return None
+    except Exception as e:
+        log.error(f"خطأ أثناء تخزين صورة Gemini المولّدة: {e}")
+        return None

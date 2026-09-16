@@ -168,7 +168,6 @@
             <button class="mode-btn" data-mode="coder" onclick="setMode('coder')"><i class="fa-solid fa-code"></i> مبرمج</button>
             <div class="mode-dropdown-divider"></div>
             <button class="mode-btn" data-mode="funny" onclick="setMode('funny')"><i class="fa-solid fa-face-laugh-beam"></i> فكاهي</button>
-            <button class="mode-btn" data-mode="creative" onclick="setMode('creative')"><i class="fa-solid fa-palette"></i> مبدع</button>
             <button class="mode-btn" data-mode="writer" onclick="setMode('writer')"><i class="fa-solid fa-pen-nib"></i> كاتب</button>
           </div>
         </div>
@@ -191,6 +190,33 @@
             </button>
             <p style="margin:6px 10px 2px;font-size:11px;color:var(--text-dim);line-height:1.6">
               Wadi 3.3 وWadi 2.1 لا يدعمان البحث الحي أو تنفيذ الكود المدمجين
+            </p>
+          </div>
+        </div>
+
+        <!-- عائلة موديل توليد الصور — منفصلة كلياً عن عائلة المحادثة
+             النصية فوق، وغير مقفلة على مستوى المحادثة (راجع تعليق
+             IMAGE_MODEL_FAMILIES بـconfig.py). تؤثر فقط عند إرسال طلب
+             توليد صورة فعلي (مثال: "ارسم صورة قطة")، بلا أي أثر على
+             بقية الرسائل. -->
+        <div class="mode-selector-wrap">
+          <button type="button" class="mode-pill" id="imageFamilyPill" onclick="toggleImageFamilyDropdown()" title="عائلة توليد الصور">
+            <i class="fa-solid fa-image" id="imageFamilyPillIcon"></i>
+            <span id="imageFamilyPillLabel">مجاني</span>
+            <i class="fa-solid fa-chevron-down mode-pill-chevron"></i>
+          </button>
+          <div class="mode-dropdown hidden" id="imageFamilyDropdown">
+            <button class="mode-btn" data-image-family="pro" onclick="setImageFamily('pro')">
+              <i class="fa-solid fa-gem"></i> قوي
+            </button>
+            <button class="mode-btn" data-image-family="plus" onclick="setImageFamily('plus')">
+              <i class="fa-solid fa-infinity"></i> يومي
+            </button>
+            <button class="mode-btn active" data-image-family="free" onclick="setImageFamily('free')">
+              <i class="fa-solid fa-image"></i> مجاني
+            </button>
+            <p style="margin:6px 10px 2px;font-size:11px;color:var(--text-dim);line-height:1.6">
+              قوي: أعلى جودة (مدفوع) · يومي: حتى ٥٠٠ صورة/يوم مجاناً · مجاني: بلا أي تسجيل أو بطاقة
             </p>
           </div>
         </div>

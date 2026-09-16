@@ -26,6 +26,10 @@ const CODER_FILE_ACCEPT_EXTRA = '.js,.jsx,.ts,.tsx,.py,.java,.c,.h,.cpp,.hpp,.cs
 const BASE_FILE_ACCEPT = 'image/*,.pdf';
 let currentMode = localStorage.getItem('mode') || 'fast';
 let currentModelFamily = localStorage.getItem('modelFamily') || 'groq';
+// عائلة موديل توليد الصور (قوي/يومي/مجاني) — منفصلة كلياً عن currentModelFamily
+// أعلاه (تلك للمحادثة النصية)، وغير مقفلة بالمحادثة (لا تدخل chatSettings
+// أدناه إطلاقاً) — راجع تعليق IMAGE_MODEL_FAMILIES بـconfig.py.
+let currentImageFamily = localStorage.getItem('imageFamily') || 'free';
 // إعدادات مثبَّتة فعلياً (من أول رسالة) لكل محادثة عندها رسائل — يُقرأ
 // منها لعرض/قفل الأزرار الصحيحة عند تصفّح محادثة قديمة، بمعزل عن آخر
 // اختيار عام للمستخدم (currentMode/currentModelFamily، يُستخدمان فقط
@@ -43,6 +47,7 @@ async function init() {
   try { chats = JSON.parse(localStorage.getItem('chats') || '{}'); } catch(e) { chats = {}; }
   setMode(currentMode, false);
   setModelFamily(currentModelFamily, false);
+  setImageFamily(currentImageFamily, false);
   loadTheme();
   applyMessageInputHintForDevice();
   renderChat();
@@ -124,7 +129,6 @@ const MODE_META = {
   fast:     { icon: 'fa-bolt',            label: 'سريع'  },
   thinker:  { icon: 'fa-brain',           label: 'مفكر'  },
   funny:    { icon: 'fa-face-laugh-beam', label: 'فكاهي' },
-  creative: { icon: 'fa-palette',         label: 'مبدع'  },
   coder:    { icon: 'fa-code',            label: 'مبرمج' },
   writer:   { icon: 'fa-pen-nib',         label: 'كاتب'  },
 };
@@ -183,8 +187,28 @@ function setModelFamily(f, save = true) {
   document.getElementById('modelFamilyDropdown')?.classList.add('hidden');
 }
 
+// ─── Image model family (توليد الصور: قوي/يومي/مجاني — راجع IMAGE_MODEL_FAMILIES بـconfig.py) ──
+const IMAGE_FAMILY_META = {
+  pro:  { icon: 'fa-gem',      label: 'قوي'   },
+  plus: { icon: 'fa-infinity', label: 'يومي'  },
+  free: { icon: 'fa-image',    label: 'مجاني' },
+};
+
+function setImageFamily(f, save = true) {
+  currentImageFamily = f;
+  if (save) localStorage.setItem('imageFamily', f);
+  document.querySelectorAll('.mode-btn[data-image-family]').forEach(b => b.classList.toggle('active', b.dataset.imageFamily === f));
+  const meta = IMAGE_FAMILY_META[f] || IMAGE_FAMILY_META.free;
+  const pillIcon = document.getElementById('imageFamilyPillIcon');
+  const pillLabel = document.getElementById('imageFamilyPillLabel');
+  if (pillIcon) pillIcon.className = 'fa-solid ' + meta.icon;
+  if (pillLabel) pillLabel.textContent = meta.label;
+  document.getElementById('imageFamilyDropdown')?.classList.add('hidden');
+}
+
 function toggleModeDropdown() {
   document.getElementById('modelFamilyDropdown')?.classList.add('hidden');
+  document.getElementById('imageFamilyDropdown')?.classList.add('hidden');
   if (document.getElementById('modePill')?.classList.contains('locked')) {
     showToast('الوضع مثبَّت لهذه المحادثة — بدّله من محادثة جديدة', '');
     return;
@@ -193,17 +217,27 @@ function toggleModeDropdown() {
 }
 function toggleModelFamilyDropdown() {
   document.getElementById('modeDropdown')?.classList.add('hidden');
+  document.getElementById('imageFamilyDropdown')?.classList.add('hidden');
   if (document.getElementById('modelFamilyPill')?.classList.contains('locked')) {
     showToast('النموذج مثبَّت لهذه المحادثة — بدّله من محادثة جديدة', '');
     return;
   }
   document.getElementById('modelFamilyDropdown')?.classList.toggle('hidden');
 }
+// بلا أي فحص "locked" (بعكس الاثنتين فوق) — عائلة توليد الصور تبقى
+// قابلة للتغيير بحرّية طول عمر المحادثة، راجع تعليق currentImageFamily أعلاه.
+function toggleImageFamilyDropdown() {
+  document.getElementById('modeDropdown')?.classList.add('hidden');
+  document.getElementById('modelFamilyDropdown')?.classList.add('hidden');
+  document.getElementById('imageFamilyDropdown')?.classList.toggle('hidden');
+}
 document.addEventListener('click', (e) => {
   const modeWrap = document.getElementById('modeDropdown')?.closest('.mode-selector-wrap');
   const familyWrap = document.getElementById('modelFamilyDropdown')?.closest('.mode-selector-wrap');
+  const imageFamilyWrap = document.getElementById('imageFamilyDropdown')?.closest('.mode-selector-wrap');
   if (modeWrap && !modeWrap.contains(e.target)) document.getElementById('modeDropdown')?.classList.add('hidden');
   if (familyWrap && !familyWrap.contains(e.target)) document.getElementById('modelFamilyDropdown')?.classList.add('hidden');
+  if (imageFamilyWrap && !imageFamilyWrap.contains(e.target)) document.getElementById('imageFamilyDropdown')?.classList.add('hidden');
 });
 
 // ─── قفل الوضع/النموذج بمحادثة بدأت فعلاً ───────────────────────
@@ -857,6 +891,7 @@ async function sendMessage() {
   fd.append('message', t);
   fd.append('mode', currentMode);
   fd.append('model_family', currentModelFamily);
+  fd.append('image_family', currentImageFamily);
   fd.append('chat_id', currentChatId);
   currentFiles.forEach(f => fd.append('files', f));
 
@@ -962,6 +997,7 @@ async function regenerate(i) {
   const fd = new FormData();
   fd.append('message', u); fd.append('mode', currentMode);
   fd.append('model_family', currentModelFamily);
+  fd.append('image_family', currentImageFamily);
   fd.append('chat_id', currentChatId);
   // نمرر id الرسالة الحالية بدل تاريخ كامل من المتصفح — الخادم يبني
   // السياق من قاعدة البيانات ويستثني هذه الرسالة وما بعدها تلقائياً.

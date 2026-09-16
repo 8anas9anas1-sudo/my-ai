@@ -236,6 +236,12 @@ body::before {
   transition:all 0.18s;
 }
 .chat-item:hover .chat-item-delete { opacity:1; }
+/* نفس مشكلة .msg-actions فوق بالضبط — hover غير موجود على الجوال، فزر
+   الحذف هذا كان يظهر بالصدفة فقط ويختفي، يبدو للمستخدم "لا يستجيب
+   بصمت". راجع تعليق .msg-actions فوق للتفاصيل الكاملة. */
+@media (hover: none) {
+  .chat-item-delete { opacity:1; }
+}
 .chat-item-delete:hover { background:rgba(255,80,80,0.25); transform:scale(1.1); }
 
 /* Sidebar footer */
@@ -605,6 +611,16 @@ pre.file-block { border-color:rgba(255,176,32,0.3); }
 }
 .msg-actions { display:flex; gap:6px; margin-top:8px; opacity:0; transition:opacity 0.2s; }
 .message:hover .msg-actions { opacity:1; }
+/* على الجوال ما فيه hover حقيقي إطلاقاً — الاعتماد عليه وحده يخلي هذه
+   الأزرار (نسخ/إعادة/استماع/عرض التفكير) تظهر بالصدفة فقط (محاكاة hover
+   مؤقتة بعض متصفحات اللمس بعد إفلات اللمس) ثم تختفي، فتبدو للمستخدم
+   وكأنها "لا تستجيب بصمت" رغم أنها تعمل فعلياً — المشكلة رؤية لا وظيفة.
+   على أي جهاز لمس حقيقي (hover:none) نجعلها ظاهرة دائماً بدل الاعتماد
+   على hover غير الموجود أصلاً؛ سلوك الفأرة على الحاسوب (hover:hover)
+   يبقى كما هو تماماً بلا أي تغيير. */
+@media (hover: none) {
+  .msg-actions { opacity:1; }
+}
 .msg-btn {
   background:var(--surface); border:1px solid var(--border);
   color:var(--text-dim); padding:5px 12px; border-radius:8px;
@@ -650,9 +666,11 @@ pre.file-block { border-color:rgba(255,176,32,0.3); }
   box-shadow:0 8px 28px rgba(0,0,0,0.18);
   transition:border-color 0.25s, box-shadow 0.25s;
 }
+/* المستخدم لا يريد أي إطار/توهج يظهر حول شريط الكتابة عند التركيز —
+   نفس مظهر الحالة العادية بالضبط بلا أي تغيير بصري عند الكتابة. */
 .composer:focus-within {
-  border-color:var(--border-glow);
-  box-shadow:0 0 0 3px rgba(0,210,255,0.1), 0 8px 28px rgba(0,0,0,0.18);
+  border-color:var(--border);
+  box-shadow:0 8px 28px rgba(0,0,0,0.18);
 }
 
 .composer .textarea-wrap { position:relative; padding:0 6px; }
@@ -663,6 +681,10 @@ pre.file-block { border-color:rgba(255,176,32,0.3); }
   resize:none; height:46px; max-height:130px; transition:height 0.1s;
 }
 .composer textarea:focus { box-shadow:none; }
+/* خصوصية أعلى من قاعدة textarea:focus-visible العامة أسفل الملف (تعطي
+   إطاراً 2px) — نضمن بقاء هذا الحقل تحديداً بلا أي إطار حتى عند التركيز
+   بالضغط على الجوال (حيث تُفعَّل focus-visible أحياناً بمجرد اللمس). */
+.composer textarea:focus-visible { outline:none; }
 .composer textarea::placeholder { color:var(--text-muted); }
 
 .composer-row {
