@@ -1,0 +1,19 @@
+name: Keep Render Awake
+
+# يشتغل كل 12 دقيقة (Render يرقد بعد 15د خمول) + زر تشغيل يدوي للاختبار.
+# ملاحظة: GitHub يعطّل الجدولة الزمنية تلقائياً لو المستودع بلا أي commit
+# لمدة 60 يوم متتالية — أي push عادي يعيد تفعيلها فوراً.
+on:
+  schedule:
+    - cron: '*/12 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /ping
+        run: |
+          curl -sf --max-time 70 https://my-ai-9wkp.onrender.com/ping \
+            && echo "✅ الموقع صاحي" \
+            || echo "⚠️ فشل الـ ping (ممكن كان بمرحلة cold start طويلة، بنعاود بعد 12 دقيقة)"
